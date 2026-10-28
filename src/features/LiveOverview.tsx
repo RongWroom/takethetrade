@@ -1,38 +1,456 @@
 import { useEffect, useState } from 'react'
-import { normalizeOkxOpenInterest, normalizeOkxTrade } from '../data/okx'
-import { replayTrades, type Trade } from '../domain/tradeEngine'
+import { normalizeOkxLiquidationOrders, normalizeOkxOpenInterest, normalizeOkxTrade, type Liquidation } from '../data/okx'
+import { evaluateMarketPulse, replayTrades, scaleSparklineBars, type PulseEvaluation, type Trade } from '../domain/tradeEngine'
+import type { Metric } from '../fixtures/demo'
 
 const minute = 60_000
-const format = (n: bigint) => `${n < 0n ? '-' : '+'}${(n < 0n ? -n : n) / 100_000_000n}.${String((n < 0n ? -n : n) % 100_000_000n).padStart(8,'0')} BTC`
-type View = { status: string; price: string | null; delta: bigint | null; cvd: bigint | null; anchor: number; updated: number | null; gap: boolean; oi: string | null; oiTime: number | null; oiStale: boolean }
-export default function LiveOverview() {
- const [view,setView]=useState<View>(()=>({status:'Connecting',price:null,delta:null,cvd:null,anchor:Math.floor(Date.now()/minute)*minute,updated:null,gap:true,oi:null,oiTime:null,oiStale:true}))
- useEffect(()=>{
-  let stopped=false, socket:WebSocket | undefined, timer:ReturnType<typeof setTimeout> | undefined, ping:ReturnType<typeof setInterval> | undefined, status='Connecting', lastReceive=0, lastEventTime=0, lastPrice:string|null=null, updated:number|null=null, gap=true, anchor=Math.floor(Date.now()/minute)*minute, trades:Trade[]=[], attempts=0, oi:string|null=null, oiTime:number|null=null
-  const publish=()=>{
-   const now=Date.now(); let delta:bigint|null=null,cvd:bigint|null=null
-   if(trades.length){ try { const end=Math.max(anchor+minute,Math.floor(now/minute)*minute+minute); const b=replayTrades(trades,{exchange:'OKX',symbol:'BTC-USDT-SWAP',start:anchor,end,bucketMs:minute}).buckets; delta=b[b.length-1].delta;cvd=b[b.length-1].cvd } catch { status='Data error'; gap=true; trades=[] } }
-   setView({status:status==='Connected' && updated !== null && now-updated>15000?'Stale':status,price:lastPrice,delta,cvd,anchor,updated,gap,oi,oiTime,oiStale:status!=='Connected' || oiTime===null || now-oiTime>15000})
-  }
-  const connect=()=>{
-   if(stopped)return
-   status=attempts?'Reconnecting':'Connecting';publish()
-   socket=new WebSocket('wss://ws.okx.com/ws/v5/public')
-   socket.onopen=()=>{ if(!socket || stopped)return; lastReceive=Date.now();socket.send(JSON.stringify({op:'subscribe',args:[{channel:'trades',instId:'BTC-USDT-SWAP'},{channel:'open-interest',instId:'BTC-USDT-SWAP'}]})) }
-   socket.onmessage=e=>{
-    lastReceive=Date.now();if(e.data==='pong')return
-    try { const msg=JSON.parse(String(e.data)); if(msg.event==='error'){gap=true;status='Subscription error';socket?.close();return} if(msg.event==='subscribe'){attempts=0;status='Connected';publish();return} if(!Array.isArray(msg.data))return; if(msg.arg?.channel==='open-interest'){for(const row of msg.data){const sample=normalizeOkxOpenInterest(row);if(sample.time <= Date.now()+60000 && (oiTime === null || sample.time >= oiTime)){oi=sample.btc;oiTime=sample.time}} return} if(msg.arg?.channel!=='trades')return
-     for(const row of msg.data){ const t=normalizeOkxTrade(row); if(t.time > Date.now()+60000){gap=true;continue} if(t.time>=anchor){trades.push(t);if(t.time>=lastEventTime){lastEventTime=t.time;lastPrice=t.price;updated=t.time}} }
-     if(trades.length>50000){trades=trades.slice(-50000);gap=true;anchor=Math.floor(trades[0].time/minute)*minute;trades=trades.filter(t=>t.time>=anchor)}
-    } catch {gap=true}
-   }
-   socket.onerror=()=>socket?.close()
-   socket.onclose=()=>{if(stopped)return;gap=true;status='Disconnected';publish();attempts++;timer=setTimeout(connect,Math.min(1000*2**Math.min(attempts,5),30000))}
-  }
-  const onVisibilityChange=()=>{ if(document.visibilityState==='hidden'){gap=true} else if(socket?.readyState===WebSocket.OPEN && Date.now()-lastReceive>30000){gap=true;socket.close()} }
-  document.addEventListener('visibilitychange',onVisibilityChange)
-  connect();const render=setInterval(publish,5000);ping=setInterval(()=>{if(socket?.readyState===WebSocket.OPEN && Date.now()-lastReceive>20000) socket.send('ping'); if(socket?.readyState===WebSocket.OPEN && Date.now()-lastReceive>30000){gap=true;socket.close()}},5000)
-  return()=>{stopped=true;document.removeEventListener('visibilitychange',onVisibilityChange);clearInterval(render);if(ping)clearInterval(ping);if(timer)clearTimeout(timer);socket?.close()}
- },[])
- return <section aria-label="Live market data"><div className="section-heading"><div><p className="eyebrow">OKX · BTC-USDT-SWAP</p><h2>Live trade data</h2></div><span className="muted">{view.status}</span></div><div className="detail-box" role="status"><strong>{view.status}</strong><p>Session begins {new Date(view.anchor).toISOString()} · {view.gap?'Incomplete coverage: no backfill and gaps may exist.':'Coverage available'}</p><p>{view.updated ? `Last trade ${new Date(view.updated).toISOString()}` : 'Waiting for trade data.'} Browser sleep and network interruptions can cause gaps.</p></div><div className="grid live-grid"><div className="metric blue"><span className="card-head">Last trade price</span><strong>{view.price ? `$${view.price}` : '—'}</strong><span className="card-foot">OKX · last received trade</span></div><div className="metric teal"><span className="card-head">Volume delta · current UTC minute</span><strong>{view.delta===null?'—':format(view.delta)}</strong><span className="card-foot">Buy minus sell · incomplete coverage</span></div><div className="metric blue"><span className="card-head">Session CVD</span><strong>{view.cvd===null?'—':format(view.cvd)}</strong><span className="card-foot">Since session start · incomplete coverage</span></div><div className="metric amber"><span className="card-head">Open interest</span><strong>{view.oi===null?'—':`${view.oi} BTC`}</strong><span className="card-foot">{view.oiTime===null?'Waiting for OKX':`OKX · ${new Date(view.oiTime).toISOString()}${view.oiStale ? ' · stale' : ''}`}</span></div></div><div className="note"><div><strong>Other metrics unavailable</strong><p>Liquidations and Market Pulse are not connected in live mode. No demo values are shown here.</p></div></div></section>
+
+const formatSignedBtc = (n: bigint) => {
+  const sign = n < 0n ? '-' : '+'
+  const abs = n < 0n ? -n : n
+  const btc = Number(abs) / 100_000_000
+  if (btc === 0) return '0.00 BTC'
+  if (btc >= 100) return `${sign}${btc.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 2 })} BTC`
+  if (btc >= 1) return `${sign}${btc.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} BTC`
+  if (btc >= 0.01) return `${sign}${btc.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 })} BTC`
+  return `${sign}${btc.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 6 })} BTC`
 }
+
+const formatOiBtc = (oi: string) => {
+  const num = Number(oi)
+  if (!Number.isFinite(num)) return `${oi} BTC`
+  return `${num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} BTC`
+}
+
+const formatUsdCompact = (usd: number) => {
+  if (usd >= 1_000_000) return `$${(usd / 1_000_000).toFixed(2)}M`
+  if (usd >= 1_000) return `$${(usd / 1_000).toFixed(1)}K`
+  return `$${Math.round(usd).toLocaleString('en-US')}`
+}
+
+const formatPrice = (px: string) => {
+  const num = Number(px)
+  if (!Number.isFinite(num)) return `$${px}`
+  return `$${num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
+export type MarketEventItem = {
+  id: string
+  tag: string
+  title: string
+  value: string
+  color: 'rose' | 'teal' | 'amber' | 'blue'
+  description: string
+  time: number
+}
+
+export type LiveDashboardState = {
+  status: string
+  price: string | null
+  rawPrice: string | null
+  anchor: number
+  updated: number | null
+  gap: boolean
+  oiTime: number | null
+  oiStale: boolean
+  metrics: Metric[]
+  pulse: PulseEvaluation
+  events: MarketEventItem[]
+}
+
+function buildMetrics(params: {
+  delta: bigint | null
+  cvd: bigint | null
+  deltaSeries: number[]
+  cvdSeries: number[]
+  oi: string | null
+  oiInitial: number | null
+  oiSeries: number[]
+  oiTime: number | null
+  oiStale: boolean
+  liquidations: Liquidation[]
+  liqSeries: number[]
+  anchor: number
+  gap: boolean
+}): Metric[] {
+  const { delta, cvd, deltaSeries, cvdSeries, oi, oiInitial, oiSeries, oiTime, oiStale, liquidations, liqSeries, anchor, gap } = params
+  const coverageNote = gap ? 'Incomplete coverage: session starts on page load with no backfill.' : 'Continuous session coverage since anchor.'
+
+  const deltaColor = delta !== null && delta < 0n ? 'rose' : 'teal'
+  const deltaDesc = delta === null
+    ? 'Waiting for executed trades'
+    : delta > 0n
+      ? 'Buyers more aggressive · current UTC minute'
+      : delta < 0n
+        ? 'Sellers more aggressive · current UTC minute'
+        : 'Balanced taker flow · current UTC minute'
+
+  const cvdDesc = cvd === null
+    ? 'Waiting for session flow'
+    : cvd > 0n
+      ? 'Net buying pressure since session start'
+      : cvd < 0n
+        ? 'Net selling pressure since session start'
+        : 'Flat cumulative delta in session'
+
+  const oiCurrentNum = oi !== null ? Number(oi) : null
+  const oiPct = oiCurrentNum !== null && oiInitial !== null && oiInitial > 0
+    ? ((oiCurrentNum - oiInitial) / oiInitial) * 100
+    : null
+  const oiDesc = oi === null
+    ? 'Waiting for OKX open interest'
+    : `${oiPct !== null ? `${oiPct >= 0 ? '+' : ''}${oiPct.toFixed(2)}% in session · ` : ''}OKX${oiStale ? ' · stale' : ''}`
+
+  const totalLiqUsd = liquidations.reduce((sum, l) => sum + l.notionalUsd, 0)
+  const longLiqUsd = liquidations.filter(l => l.side === 'long').reduce((sum, l) => sum + l.notionalUsd, 0)
+  const shortLiqUsd = totalLiqUsd - longLiqUsd
+  const longShare = totalLiqUsd > 0 ? Math.round((longLiqUsd / totalLiqUsd) * 100) : 0
+  const liqDesc = totalLiqUsd === 0
+    ? 'No reported liquidations in session'
+    : longLiqUsd >= shortLiqUsd
+      ? `${longShare}% long liquidations (${liquidations.length} reported)`
+      : `${100 - longShare}% short liquidations (${liquidations.length} reported)`
+
+  return [
+    {
+      id: 'delta',
+      label: 'Volume Delta',
+      value: delta === null ? '—' : formatSignedBtc(delta),
+      description: deltaDesc,
+      detail: `Taker buy volume minus taker sell volume in the current UTC minute on OKX BTC-USDT-SWAP. Delta measures executed market orders, not resting limit orders. ${coverageNote}`,
+      color: deltaColor,
+      bars: scaleSparklineBars(deltaSeries),
+    },
+    {
+      id: 'cvd',
+      label: 'Cumulative Volume Delta',
+      value: cvd === null ? '—' : formatSignedBtc(cvd),
+      description: cvdDesc,
+      detail: `Running sum of executed trade delta anchored at ${new Date(anchor).toISOString()}. ${coverageNote}`,
+      color: 'blue',
+      bars: scaleSparklineBars(cvdSeries),
+    },
+    {
+      id: 'oi',
+      label: 'Open Interest',
+      value: oi === null ? '—' : formatOiBtc(oi),
+      description: oiDesc,
+      detail: `Outstanding OKX BTC-USDT-SWAP contracts converted to BTC (${oi ?? '—'} BTC raw). ${oiTime ? `Last reported ${new Date(oiTime).toISOString()}${oiStale ? ' (stale)' : ''}.` : 'Waiting for initial open-interest push.'} A rise alone does not reveal whether new positions are net long or short.`,
+      color: 'amber',
+      bars: scaleSparklineBars(oiSeries.length > 1 ? oiSeries.map(v => v - (oiInitial ?? v)) : oiSeries),
+    },
+    {
+      id: 'liquidations',
+      label: 'Liquidations',
+      value: formatUsdCompact(totalLiqUsd),
+      description: liqDesc,
+      detail: `Reported forced closures on OKX BTC-USDT-SWAP since ${new Date(anchor).toISOString()}. Long liquidations: ${formatUsdCompact(longLiqUsd)} · Short liquidations: ${formatUsdCompact(shortLiqUsd)}. Exchange feeds are sampled and do not represent complete liquidation coverage.`,
+      color: 'rose',
+      bars: scaleSparklineBars(liqSeries),
+    },
+  ]
+}
+
+export function useLiveMarketData(): LiveDashboardState {
+  const [state, setState] = useState<LiveDashboardState>(() => {
+    const anchor = Math.floor(Date.now() / minute) * minute
+    return {
+      status: 'Connecting',
+      price: null,
+      rawPrice: null,
+      anchor,
+      updated: null,
+      gap: true,
+      oiTime: null,
+      oiStale: true,
+      metrics: buildMetrics({
+        delta: null,
+        cvd: null,
+        deltaSeries: [],
+        cvdSeries: [],
+        oi: null,
+        oiInitial: null,
+        oiSeries: [],
+        oiTime: null,
+        oiStale: true,
+        liquidations: [],
+        liqSeries: [],
+        anchor,
+        gap: true,
+      }),
+      pulse: evaluateMarketPulse({
+        priceStart: null,
+        priceEnd: null,
+        deltaSats: null,
+        cvdChangeSats: null,
+        oiStartBtc: null,
+        oiEndBtc: null,
+        longLiqUsd: 0,
+        shortLiqUsd: 0,
+      }),
+      events: [],
+    }
+  })
+
+  useEffect(() => {
+    let stopped = false
+    let socket: WebSocket | undefined
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let ping: ReturnType<typeof setInterval> | undefined
+    let status = 'Connecting'
+    let lastReceive = 0
+    let lastEventTime = 0
+    let firstPrice: number | null = null
+    let lastPrice: string | null = null
+    let updated: number | null = null
+    let gap = true
+    let anchor = Math.floor(Date.now() / minute) * minute
+    let trades: Trade[] = []
+    let attempts = 0
+    let oi: string | null = null
+    let oiInitial: number | null = null
+    let oiTime: number | null = null
+    const oiHistory: number[] = []
+    const seenLiqIds = new Set<string>()
+    let liquidations: Liquidation[] = []
+    const eventsMap = new Map<string, MarketEventItem>()
+
+    const publish = () => {
+      const now = Date.now()
+      let delta: bigint | null = null
+      let cvd: bigint | null = null
+      let deltaSeries: number[] = []
+      let cvdSeries: number[] = []
+      if (trades.length) {
+        try {
+          const end = Math.max(anchor + minute, Math.floor(now / minute) * minute + minute)
+          const b = replayTrades(trades, { exchange: 'OKX', symbol: 'BTC-USDT-SWAP', start: anchor, end, bucketMs: minute }).buckets
+          delta = b[b.length - 1].delta
+          cvd = b[b.length - 1].cvd
+          deltaSeries = b.slice(-12).map(bucket => Number(bucket.delta) / 1e8)
+          cvdSeries = b.slice(-12).map(bucket => Number(bucket.cvd) / 1e8)
+        } catch {
+          status = 'Data error'
+          gap = true
+          trades = []
+        }
+      }
+
+      const effectiveStatus = status === 'Connected' && updated !== null && now - updated > 15000 ? 'Stale' : status
+      const oiStale = status !== 'Connected' || oiTime === null || now - oiTime > 15000
+      const longLiqUsd = liquidations.filter(l => l.side === 'long').reduce((s, l) => s + l.notionalUsd, 0)
+      const shortLiqUsd = liquidations.filter(l => l.side === 'short').reduce((s, l) => s + l.notionalUsd, 0)
+      const liqSeries = liquidations.slice(-12).map(l => l.notionalUsd)
+
+      if (delta !== null) {
+        const absDeltaBtc = Number(delta < 0n ? -delta : delta) / 1e8
+        if (absDeltaBtc >= 25) {
+          const minuteKey = `delta-${Math.floor(now / minute)}`
+          eventsMap.set(minuteKey, {
+            id: minuteKey,
+            tag: 'LIVE ORDER FLOW EVENT',
+            title: delta > 0n ? 'Elevated taker buying delta' : 'Elevated taker selling delta',
+            value: formatSignedBtc(delta),
+            color: delta > 0n ? 'teal' : 'rose',
+            description: `Net taker delta reached ${formatSignedBtc(delta)} in the current UTC minute on OKX BTC-USDT-SWAP.`,
+            time: updated ?? now,
+          })
+        }
+      }
+
+      const metrics = buildMetrics({
+        delta,
+        cvd,
+        deltaSeries,
+        cvdSeries,
+        oi,
+        oiInitial,
+        oiSeries: oiHistory,
+        oiTime,
+        oiStale,
+        liquidations,
+        liqSeries,
+        anchor,
+        gap,
+      })
+
+      const pulse = evaluateMarketPulse({
+        priceStart: firstPrice,
+        priceEnd: lastPrice !== null ? Number(lastPrice) : null,
+        deltaSats: delta,
+        cvdChangeSats: cvd,
+        oiStartBtc: oiInitial,
+        oiEndBtc: oi !== null ? Number(oi) : null,
+        longLiqUsd,
+        shortLiqUsd,
+      })
+
+      setState({
+        status: effectiveStatus,
+        price: lastPrice ? formatPrice(lastPrice) : null,
+        rawPrice: lastPrice ? `$${lastPrice}` : null,
+        anchor,
+        updated,
+        gap,
+        oiTime,
+        oiStale,
+        metrics,
+        pulse,
+        events: Array.from(eventsMap.values()).sort((a, b) => b.time - a.time).slice(0, 20),
+      })
+    }
+
+    const connect = () => {
+      if (stopped) return
+      status = attempts ? 'Reconnecting' : 'Connecting'
+      publish()
+      socket = new WebSocket('wss://ws.okx.com/ws/v5/public')
+      socket.onopen = () => {
+        if (!socket || stopped) return
+        lastReceive = Date.now()
+        socket.send(
+          JSON.stringify({
+            op: 'subscribe',
+            args: [
+              { channel: 'trades', instId: 'BTC-USDT-SWAP' },
+              { channel: 'open-interest', instId: 'BTC-USDT-SWAP' },
+              { channel: 'liquidation-orders', instType: 'SWAP' },
+            ],
+          }),
+        )
+      }
+      socket.onmessage = e => {
+        lastReceive = Date.now()
+        if (e.data === 'pong') return
+        try {
+          const msg = JSON.parse(String(e.data))
+          if (msg.event === 'error') {
+            gap = true
+            status = 'Subscription error'
+            socket?.close()
+            return
+          }
+          if (msg.event === 'subscribe') {
+            attempts = 0
+            status = 'Connected'
+            publish()
+            return
+          }
+          if (!Array.isArray(msg.data)) return
+          if (msg.arg?.channel === 'open-interest') {
+            let receivedNewOi = false
+            for (const row of msg.data) {
+              const sample = normalizeOkxOpenInterest(row)
+              if (sample.time <= Date.now() + 60000 && (oiTime === null || sample.time >= oiTime)) {
+                oi = sample.btc
+                oiTime = sample.time
+                const num = Number(sample.btc)
+                if (Number.isFinite(num)) {
+                  if (oiInitial === null) oiInitial = num
+                  oiHistory.push(num)
+                  if (oiHistory.length > 24) oiHistory.shift()
+                }
+                receivedNewOi = true
+              }
+            }
+            if (receivedNewOi && oiHistory.length === 1) publish()
+            return
+          }
+          if (msg.arg?.channel === 'liquidation-orders') {
+            let added = false
+            for (const row of msg.data) {
+              const items = normalizeOkxLiquidationOrders(row)
+              for (const item of items) {
+                if (item.time <= Date.now() + 60000 && !seenLiqIds.has(item.id)) {
+                  seenLiqIds.add(item.id)
+                  liquidations.push(item)
+                  added = true
+                  if (item.notionalUsd >= 25_000) {
+                    eventsMap.set(`liq-${item.id}`, {
+                      id: `liq-${item.id}`,
+                      tag: 'REPORTED LIQUIDATION',
+                      title: `Large ${item.side} liquidation`,
+                      value: `${formatUsdCompact(item.notionalUsd)} ${item.side}s`,
+                      color: item.side === 'long' ? 'rose' : 'teal',
+                      description: `Reported forced ${item.side} closure of ${item.btc} BTC near $${item.price} on OKX BTC-USDT-SWAP.`,
+                      time: item.time,
+                    })
+                  }
+                }
+              }
+            }
+            if (liquidations.length > 1000) liquidations = liquidations.slice(-1000)
+            if (added) publish()
+            return
+          }
+          if (msg.arg?.channel !== 'trades') return
+          const wasEmpty = trades.length === 0
+          for (const row of msg.data) {
+            const t = normalizeOkxTrade(row)
+            if (t.time > Date.now() + 60000) {
+              gap = true
+              continue
+            }
+            if (t.time >= anchor) {
+              trades.push(t)
+              if (firstPrice === null) firstPrice = Number(t.price)
+              if (t.time >= lastEventTime) {
+                lastEventTime = t.time
+                lastPrice = t.price
+                updated = t.time
+              }
+            }
+          }
+          if (trades.length > 50000) {
+            trades = trades.slice(-50000)
+            gap = true
+            anchor = Math.floor(trades[0].time / minute) * minute
+            trades = trades.filter(t => t.time >= anchor)
+          }
+          if (wasEmpty && trades.length > 0) publish()
+        } catch {
+          gap = true
+        }
+      }
+      socket.onerror = () => socket?.close()
+      socket.onclose = () => {
+        if (stopped) return
+        gap = true
+        status = 'Disconnected'
+        publish()
+        attempts++
+        timer = setTimeout(connect, Math.min(1000 * 2 ** Math.min(attempts, 5), 30000))
+      }
+    }
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        gap = true
+      } else if (socket?.readyState === WebSocket.OPEN && Date.now() - lastReceive > 30000) {
+        gap = true
+        socket.close()
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    connect()
+    const render = setInterval(publish, 5000)
+    ping = setInterval(() => {
+      if (socket?.readyState === WebSocket.OPEN && Date.now() - lastReceive > 20000) socket.send('ping')
+      if (socket?.readyState === WebSocket.OPEN && Date.now() - lastReceive > 30000) {
+        gap = true
+        socket.close()
+      }
+    }, 5000)
+    return () => {
+      stopped = true
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      clearInterval(render)
+      if (ping) clearInterval(ping)
+      if (timer) clearTimeout(timer)
+      socket?.close()
+    }
+  }, [])
+
+  return state
+}
+

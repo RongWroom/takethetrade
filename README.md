@@ -1,6 +1,6 @@
 # Take The Trade
 
-A read-only Bitcoin order-flow dashboard design prototype. Demo mode uses illustrative fixtures. The experimental live mode connects to the public OKX BTC-USDT swap trade stream and displays a last trade price, minute delta, session CVD and open-interest quantity. No trading functionality is implemented. Live coverage is incomplete: the session starts when the page opens, has no backfill and can miss trades during disconnects or browser sleep. Review OKX’s API terms and eligibility before using live mode. Focus mode and event dismissal last for the current session.
+A read-only Bitcoin perpetual-futures order-flow dashboard. The overview connects directly to the public OKX `BTC-USDT-SWAP` WebSocket stream (`trades`, `open-interest`, and `liquidation-orders`) and displays live price in the header, four interactive order-flow cards (Volume Delta, Cumulative Volume Delta, Open Interest, and Liquidations), a deterministic Market Pulse summary, and a quiet Market Events inbox. No trading functionality is implemented. Live coverage begins when the page opens, has no historical backfill, and can miss events during disconnects or browser sleep.
 
 ## Development
 

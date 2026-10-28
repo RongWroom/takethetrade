@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { btcToSatoshis, replayTrades, type Trade } from './tradeEngine'
+import { btcToSatoshis, evaluateMarketPulse, replayTrades, scaleSparklineBars, type Trade } from './tradeEngine'
 
 const trade = (id: string, time: number, side: Trade['side'], quantityBtc: string): Trade => ({ exchange: 'demo', symbol: 'BTC', id, time, side, quantityBtc })
 const options = { exchange: 'demo', symbol: 'BTC', start: 0, end: 3000, bucketMs: 1000 }
@@ -30,3 +30,55 @@ describe('trade replay', () => {
     expect(() => replayTrades([{ ...trade('a', 0, 'buy', '1'), symbol: 'OTHER' }], options)).toThrow('mismatched')
   })
 })
+
+describe('market pulse and sparkline scaling', () => {
+  it('returns insufficient data when baseline observations are missing', () => {
+    const res = evaluateMarketPulse({
+      priceStart: null,
+      priceEnd: null,
+      deltaSats: null,
+      cvdChangeSats: null,
+      oiStartBtc: null,
+      oiEndBtc: null,
+      longLiqUsd: 0,
+      shortLiqUsd: 0,
+    })
+    expect(res.ruleId).toBe('insufficient-data')
+    expect(res.headline).toBe('Insufficient data')
+  })
+
+  it('matches deterministic rules for buying support and absorption', () => {
+    const supporting = evaluateMarketPulse({
+      priceStart: 80000,
+      priceEnd: 80100,
+      deltaSats: 500_000_000n,
+      cvdChangeSats: 1_000_000_000n,
+      oiStartBtc: 30000,
+      oiEndBtc: 30010,
+      longLiqUsd: 0,
+      shortLiqUsd: 0,
+    })
+    expect(supporting.ruleId).toBe('buying-supporting-price')
+    expect(supporting.headline).toBe('Aggressive buying is supporting the price move.')
+
+    const absorption = evaluateMarketPulse({
+      priceStart: 80000,
+      priceEnd: 80005,
+      deltaSats: 500_000_000n,
+      cvdChangeSats: 1_000_000_000n,
+      oiStartBtc: 30000,
+      oiEndBtc: 30000,
+      longLiqUsd: 0,
+      shortLiqUsd: 0,
+    })
+    expect(absorption.ruleId).toBe('buying-absorption')
+  })
+
+  it('scales sparkline bars to 12 items within 18..94', () => {
+    const bars = scaleSparklineBars([1, 2, 4])
+    expect(bars).toHaveLength(12)
+    expect(Math.max(...bars)).toBe(94)
+    expect(Math.min(...bars)).toBe(18)
+  })
+})
+
