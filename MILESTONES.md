@@ -1,0 +1,11 @@
+# Milestones
+
+- M0 — Repository and quality gates: foundation implemented; user approved continuation. Fresh npm ci, lint, typecheck, unit test infrastructure, production build, and desktop/tablet Chromium smoke tests passed. Tablet emulation does not replace iPad Safari testing.
+- M1 — Static design prototype: prototype implemented; user approved visual direction. Demo fixtures, metric details, event inbox, session focus mode and responsive layouts are available. Desktop/tablet Chromium interaction and width checks pass. Actual iPad/iPhone Safari and manual device assessment remains outstanding. Loading and error previews are available in Settings.
+- M2 — Provider spike: in progress. Bybit documentation is reachable; its REST endpoint returns a provider-side geographic 403 from this cloud machine. OKX public trades and open interest were observed across two connections; OKX agreement requires user review and clarification of UK eligibility; the user confirmed personal use only; backfill reconciliation, automatic reconnection and liquidation coverage remain unverified.
+- M3 — Trade engine: offline replay implemented with exact satoshi arithmetic, deduplication, session boundaries and gap flags; unit tests pass. Provider normalization, automatic gap detection and live integration remain outstanding.
+- M4 — Live overview: experimental OKX trade stream, price, minute delta and session CVD implemented with incomplete-coverage labels and reconnect attempts. Controlled browser checks pass, including disconnect and resubscription while retaining the coverage warning. A real cloud Chromium connection failed with ERR_CERT_AUTHORITY_INVALID through the cloud proxy; the separate Python diagnostic received real OKX trades and open interest. User confirmed personal use and acceptance of OKX terms. Backfill, gap detection and iPad Safari stability remain unverified.
+- M5 — In progress: live OKX open-interest quantity, timestamp and stale status added; validated with provider-shaped fixtures. Change-window calculations, liquidations, event history and live browser validation remain outstanding.
+- M6 — Market Pulse: not started.
+- M7 — Deep Dive and preferences: not started.
+- M8 — Optional liquidity experiment: not started.
