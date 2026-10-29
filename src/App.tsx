@@ -1,18 +1,73 @@
 import { useEffect, useRef, useState } from 'react'
+import { OI_CHEAT_SHEET_ROWS, type CvdMedianProfile } from './domain/tradeEngine'
 import { useLiveMarketData } from './features/LiveOverview'
 import type { Metric } from './fixtures/demo'
 
 type Panel = Metric['id'] | 'pulse' | 'events' | 'settings' | null
 
+function formatSignedBtcNum(n: number): string {
+  if (Math.abs(n) < 1e-6) return '0.00 BTC'
+  const sign = n < 0 ? '-' : '+'
+  const abs = Math.abs(n)
+  return `${sign}${abs.toFixed(2)} BTC`
+}
+
+function CvdMedianChart({ profile }: { profile: CvdMedianProfile }) {
+  return (
+    <div className="cvd-median-wrap">
+      <div className="cvd-median-stats">
+        <span className="above-stat">
+          ▲ Above median: <strong>{profile.aboveVolumeBtc.toFixed(2)} BTC</strong> ({profile.aboveCount}m)
+        </span>
+        <span className="median-badge">Median {formatSignedBtcNum(profile.medianBtc)}</span>
+        <span className="below-stat">
+          ▼ Below median: <strong>{profile.belowVolumeBtc.toFixed(2)} BTC</strong> ({profile.belowCount}m)
+        </span>
+      </div>
+      <div className="cvd-median-chart" aria-label="CVD median volume chart">
+        <div className="cvd-median-line" />
+        {profile.bars.map((bar, i) => (
+          <div key={i} className="cvd-median-col">
+            <div className="cvd-half-top">
+              {bar.direction === 'above' && (
+                <i
+                  className="bar-above"
+                  style={{ height: `${bar.heightPct}%`, opacity: 0.55 + i / 28 }}
+                  title={`CVD: ${formatSignedBtcNum(bar.valueBtc)} (${formatSignedBtcNum(bar.deviationBtc)} vs median) · Vol: ${bar.volumeBtc.toFixed(2)} BTC`}
+                />
+              )}
+            </div>
+            <div className="cvd-half-bottom">
+              {bar.direction === 'below' && (
+                <i
+                  className="bar-below"
+                  style={{ height: `${bar.heightPct}%`, opacity: 0.55 + i / 28 }}
+                  title={`CVD: ${formatSignedBtcNum(bar.valueBtc)} (${formatSignedBtcNum(bar.deviationBtc)} vs median) · Vol: ${bar.volumeBtc.toFixed(2)} BTC`}
+                />
+              )}
+              {bar.direction === 'on' && <i className="bar-on" />}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function App() {
   const [panel, setPanel] = useState<Panel>(null)
   const [focus, setFocus] = useState(false)
   const [dismissedIds, setDismissedIds] = useState<string[]>([])
+  const [flippedCards, setFlippedCards] = useState<Record<string, boolean>>({})
   const dialog = useRef<HTMLDialogElement>(null)
   const live = useLiveMarketData()
 
   const activeMetric = typeof panel === 'string' ? live.metrics.find(m => m.id === panel) ?? null : null
   const visibleEvents = live.events.filter(ev => !dismissedIds.includes(ev.id))
+
+  const toggleFlip = (id: string) => {
+    setFlippedCards(prev => ({ ...prev, [id]: !prev[id] }))
+  }
 
   useEffect(() => {
     if (panel && !dialog.current?.open) dialog.current?.showModal()
@@ -55,7 +110,7 @@ function App() {
           <div>
             <p className="eyebrow">YOUR MARKET OVERVIEW</p>
             <h1>Clarity in the flow.</h1>
-            <p className="muted">A quieter view of the forces moving Bitcoin.</p>
+            <p className="muted">Plain-English translations of what buyers and sellers are doing right now.</p>
           </div>
           <div className="market">
             <span>
@@ -75,42 +130,118 @@ function App() {
             <h2>Order flow at a glance</h2>
           </div>
           <span className="muted section-note">
-            Session {new Date(live.anchor).toISOString().slice(11, 16)} UTC · tap a card for details
+            Session {new Date(live.anchor).toISOString().slice(11, 16)} UTC · tap any box to flip it over
           </span>
         </div>
         <div className="grid">
-          {live.metrics.map(m => (
-            <button
-              key={m.id}
-              className={`metric ${m.color}`}
-              onClick={() => setPanel(m.id)}
-              aria-label={`Open ${m.label} details`}
-            >
-              <span className="card-head">
-                {m.label}
-                <span aria-hidden="true">→</span>
-              </span>
-              <strong>{m.value}</strong>
-              {!focus && (
-                <>
-                  <span className="chart" aria-hidden="true">
-                    {m.bars.map((h, i) => (
-                      <i key={i} style={{ height: `${h}%`, opacity: 0.5 + i / 24 }} />
-                    ))}
+          {live.metrics.map(m => {
+            const isFlipped = Boolean(flippedCards[m.id])
+            return (
+              <div
+                key={m.id}
+                role="button"
+                tabIndex={0}
+                aria-label={`Flip ${m.label} card`}
+                className={`metric ${m.color} ${isFlipped ? 'is-flipped' : ''}`}
+                onClick={() => toggleFlip(m.id)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    toggleFlip(m.id)
+                  }
+                }}
+              >
+                <span className="card-head">
+                  <span>
+                    {m.label}
+                    <small className="flip-hint">{isFlipped ? ' · Flipped ↺' : ' · Tap to flip ↻'}</small>
                   </span>
-                  <span className="card-foot">
-                    {m.description}
-                    <span>View details →</span>
-                  </span>
-                </>
-              )}
-            </button>
-          ))}
+                  <button
+                    type="button"
+                    className="icon-detail-btn"
+                    aria-label={`Open ${m.label} details`}
+                    onClick={e => {
+                      e.stopPropagation()
+                      setPanel(m.id)
+                    }}
+                  >
+                    →
+                  </button>
+                </span>
+                {!isFlipped ? (
+                  <>
+                    <strong>{m.value}</strong>
+                    {!focus && (
+                      <>
+                        <span className="chart" aria-hidden="true">
+                          {m.bars.map((h, i) => (
+                            <i key={i} style={{ height: `${h}%`, opacity: 0.5 + i / 24 }} />
+                          ))}
+                        </span>
+                        <span className="card-foot">
+                          <span>{m.description}</span>
+                          <span
+                            className="detail-trigger"
+                            onClick={e => {
+                              e.stopPropagation()
+                              setPanel(m.id)
+                            }}
+                          >
+                            View details →
+                          </span>
+                        </span>
+                      </>
+                    )}
+                  </>
+                ) : (
+                  <div className="card-back">
+                    {m.id === 'cvd' && m.cvdMedian ? (
+                      <>
+                        <div className="card-back-top">
+                          <strong>{m.value}</strong>
+                          <span className="exo-tag">ExoCharts Median View</span>
+                        </div>
+                        <CvdMedianChart profile={m.cvdMedian} />
+                        <p className="plain-explain">{m.cvdMedian.summary}</p>
+                      </>
+                    ) : (
+                      <>
+                        <div className="card-back-top">
+                          <strong>{m.value}</strong>
+                          <span className="exo-tag">Plain English</span>
+                        </div>
+                        <p className="plain-explain">{m.plainSummary ?? m.detail}</p>
+                        {m.id === 'oi' && live.oiRegime.activeRow && (
+                          <div className={`regime-mini-pill ${live.oiRegime.activeRow.sentiment.toLowerCase()}`}>
+                            {live.oiRegime.activeRow.marketTitle} — {live.oiRegime.activeRow.sentiment}
+                          </div>
+                        )}
+                      </>
+                    )}
+                    {!focus && (
+                      <span className="card-foot">
+                        <span>Tap box to flip back ↺</span>
+                        <span
+                          className="detail-trigger"
+                          onClick={e => {
+                            e.stopPropagation()
+                            setPanel(m.id)
+                          }}
+                        >
+                          View details →
+                        </span>
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+            )
+          })}
         </div>
         <button className="pulse" onClick={() => setPanel('pulse')}>
           <span className="pulse-head">
             <span>
-              <span className="pulse-icon">•</span> Market Pulse
+              <span className="pulse-icon">•</span> Market Pulse (Plain English)
             </span>
             <span className="observation">{live.pulse.observation}</span>
           </span>
@@ -120,6 +251,95 @@ function App() {
             Explore the evidence <span>→</span>
           </span>
         </button>
+
+        {!focus && (
+          <section className="oi-matrix-section" aria-label="Open Interest Cheat Sheet Calculator">
+            <div className="oi-matrix-header">
+              <div>
+                <p className="eyebrow">OPEN INTEREST CALCULATOR</p>
+                <h2>Price, Volume &amp; Open Interest Matrix</h2>
+              </div>
+              <div className="oi-live-verdict">
+                {live.oiRegime.activeRow ? (
+                  <span className={`verdict-pill ${live.oiRegime.activeRow.sentiment.toLowerCase()}`}>
+                    Live: {live.oiRegime.activeRow.marketTitle} · {live.oiRegime.activeRow.sentiment}
+                  </span>
+                ) : (
+                  <span className="verdict-pill neutral">Waiting for price &amp; OI movement</span>
+                )}
+              </div>
+            </div>
+
+            <div className="oi-live-strip">
+              <div className="oi-signal-pill">
+                <small>Price</small>
+                <strong className={live.oiRegime.priceDirection === 'rising' ? 'up' : live.oiRegime.priceDirection === 'declining' ? 'down' : ''}>
+                  {live.oiRegime.priceDirection === 'rising' ? '↑ rising' : live.oiRegime.priceDirection === 'declining' ? '↓ declining' : '→ flat'}
+                </strong>
+              </div>
+              <div className="oi-signal-pill">
+                <small>Volume</small>
+                <strong className={live.oiRegime.volumeDirection === 'increasing' ? 'up' : live.oiRegime.volumeDirection === 'decreasing' ? 'down' : ''}>
+                  {live.oiRegime.volumeDirection === 'increasing' ? '↑ increasing' : live.oiRegime.volumeDirection === 'decreasing' ? '↓ decreasing' : '→ flat'}
+                </strong>
+              </div>
+              <div className="oi-signal-pill">
+                <small>Open interest</small>
+                <strong className={live.oiRegime.oiDirection === 'increasing' ? 'up' : live.oiRegime.oiDirection === 'decreasing' ? 'down' : ''}>
+                  {live.oiRegime.oiDirection === 'increasing' ? '↑ increasing' : live.oiRegime.oiDirection === 'decreasing' ? '↓ decreasing' : '→ flat'}
+                </strong>
+              </div>
+              <div className="oi-signal-pill verdict-cell">
+                <small>Market</small>
+                <strong>
+                  {live.oiRegime.activeRow
+                    ? `${live.oiRegime.activeRow.marketTitle} - ${live.oiRegime.activeRow.sentiment}`
+                    : 'Calculating baseline...'}
+                </strong>
+              </div>
+            </div>
+
+            <div className="oi-cheat-table">
+              <div className="oi-table-cols" aria-hidden="true">
+                <span>Price</span>
+                <span>Volume</span>
+                <span>Open interest</span>
+                <span>Market</span>
+              </div>
+              {OI_CHEAT_SHEET_ROWS.map(row => {
+                const isActive = live.oiRegime.activeRowId === row.id
+                return (
+                  <div key={row.id} className={`oi-cheat-row ${isActive ? 'active' : ''}`}>
+                    <div className="oi-row-signals">
+                      <span className={`sig ${row.priceLabel === 'rising' ? 'up' : 'down'}`}>
+                        <i>{row.priceLabel === 'rising' ? '↑' : '↓'}</i> {row.priceLabel}
+                      </span>
+                      <span className={`sig ${row.volumeLabel === 'increasing' ? 'up' : 'down'}`}>
+                        <i>{row.volumeLabel === 'increasing' ? '↑' : '↓'}</i> {row.volumeLabel}
+                      </span>
+                      <span className={`sig ${row.oiLabel === 'increasing' ? 'up' : 'down'}`}>
+                        <i>{row.oiLabel === 'increasing' ? '↑' : '↓'}</i> {row.oiLabel}
+                      </span>
+                      <span className="sig-market">
+                        <strong>{row.marketTitle}</strong> -{' '}
+                        <em className={row.sentiment.toLowerCase()}>{row.sentiment}</em>
+                        {isActive && <span className="live-match-badge">LIVE NOW</span>}
+                      </span>
+                    </div>
+                    <p className="oi-row-desc">{row.plainEnglish}</p>
+                    <p className="oi-row-sub">{row.explanation}</p>
+                  </div>
+                )
+              })}
+            </div>
+
+            <div className="oi-continuation-note">
+              <span className="note-icon">ⓘ</span>
+              <p>{live.oiRegime.continuationNote}</p>
+            </div>
+          </section>
+        )}
+
         {!focus && (
           <div className="bottom-row">
             <div className="note">
@@ -173,9 +393,15 @@ function App() {
           {activeMetric && (
             <>
               <p className={`detail-value ${activeMetric.color}`}>{activeMetric.value}</p>
+              {activeMetric.id === 'cvd' && activeMetric.cvdMedian && (
+                <div className="detail-box">
+                  <strong>CVD Median Profile (ExoCharts view)</strong>
+                  <CvdMedianChart profile={activeMetric.cvdMedian} />
+                </div>
+              )}
               <p>{activeMetric.detail}</p>
               <div className="detail-box">
-                <strong>Source & session coverage</strong>
+                <strong>Source &amp; session coverage</strong>
                 <p>
                   Exchange: OKX public WebSocket (`BTC-USDT-SWAP`) · Session anchor: {new Date(live.anchor).toISOString()} · Status: {live.status}
                 </p>
@@ -233,7 +459,7 @@ function App() {
                 <input type="checkbox" checked={focus} onChange={e => setFocus(e.target.checked)} />
               </label>
               <div className="detail-box">
-                <strong>Data health & connection</strong>
+                <strong>Data health &amp; connection</strong>
                 <p>Status: {live.status} · Feed: OKX BTC-USDT-SWAP public WebSocket</p>
                 <p>
                   Session anchor: {new Date(live.anchor).toISOString()}

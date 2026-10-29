@@ -1,6 +1,15 @@
 import { useEffect, useState } from 'react'
 import { normalizeOkxLiquidationOrders, normalizeOkxOpenInterest, normalizeOkxTrade, type Liquidation } from '../data/okx'
-import { evaluateMarketPulse, replayTrades, scaleSparklineBars, type PulseEvaluation, type Trade } from '../domain/tradeEngine'
+import {
+  calculateCvdMedianProfile,
+  evaluateMarketPulse,
+  evaluateOiRegime,
+  replayTrades,
+  scaleSparklineBars,
+  type OiRegimeEvaluation,
+  type PulseEvaluation,
+  type Trade,
+} from '../domain/tradeEngine'
 import type { Metric } from '../fixtures/demo'
 
 const minute = 60_000
@@ -55,6 +64,7 @@ export type LiveDashboardState = {
   oiStale: boolean
   metrics: Metric[]
   pulse: PulseEvaluation
+  oiRegime: OiRegimeEvaluation
   events: MarketEventItem[]
 }
 
@@ -63,6 +73,7 @@ function buildMetrics(params: {
   cvd: bigint | null
   deltaSeries: number[]
   cvdSeries: number[]
+  volumeSeries: number[]
   oi: string | null
   oiInitial: number | null
   oiSeries: number[]
@@ -73,25 +84,43 @@ function buildMetrics(params: {
   anchor: number
   gap: boolean
 }): Metric[] {
-  const { delta, cvd, deltaSeries, cvdSeries, oi, oiInitial, oiSeries, oiTime, oiStale, liquidations, liqSeries, anchor, gap } = params
+  const { delta, cvd, deltaSeries, cvdSeries, volumeSeries, oi, oiInitial, oiSeries, oiTime, oiStale, liquidations, liqSeries, anchor, gap } = params
   const coverageNote = gap ? 'Incomplete coverage: session starts on page load with no backfill.' : 'Continuous session coverage since anchor.'
 
   const deltaColor = delta !== null && delta < 0n ? 'rose' : 'teal'
   const deltaDesc = delta === null
-    ? 'Waiting for executed trades'
+    ? 'Waiting for live trades'
     : delta > 0n
-      ? 'Buyers more aggressive · current UTC minute'
+      ? 'Buyers are hitting the ask · this minute'
       : delta < 0n
-        ? 'Sellers more aggressive · current UTC minute'
-        : 'Balanced taker flow · current UTC minute'
+        ? 'Sellers are hitting the bid · this minute'
+        : 'Buyers & sellers evenly matched · this minute'
+
+  const deltaPlain = delta === null
+    ? 'Waiting for trades to see whether buyers or sellers are more impatient right now.'
+    : delta > 0n
+      ? `Buyers are more aggressive right now! This means traders have market-bought ${formatSignedBtc(delta)} more than they sold this minute — they are willing to pay up immediately instead of waiting.`
+      : delta < 0n
+        ? `Sellers are more aggressive right now! This means traders have market-sold ${formatSignedBtc(delta)} more than they bought this minute — they are rushing to sell at current prices.`
+        : 'Buyers and sellers are completely balanced this minute — neither side is pushing harder with market orders.'
 
   const cvdDesc = cvd === null
     ? 'Waiting for session flow'
     : cvd > 0n
-      ? 'Net buying pressure since session start'
+      ? 'More market buying overall · tap to flip median view'
       : cvd < 0n
-        ? 'Net selling pressure since session start'
-        : 'Flat cumulative delta in session'
+        ? 'More market selling overall · tap to flip median view'
+        : 'Balanced session flow · tap to flip median view'
+
+  const cvdMedian = calculateCvdMedianProfile(cvdSeries, volumeSeries)
+
+  const cvdPlain = cvd === null
+    ? 'Waiting for trades to track the running tug-of-war between buyers and sellers.'
+    : cvd > 0n
+      ? `Buyers are winning the session tug-of-war (${formatSignedBtc(cvd)} net buying). ${cvdMedian.summary}`
+      : cvd < 0n
+        ? `Sellers are winning the session tug-of-war (${formatSignedBtc(cvd)} net selling). ${cvdMedian.summary}`
+        : `Buyers and sellers have canceled each other out since the session began. ${cvdMedian.summary}`
 
   const oiCurrentNum = oi !== null ? Number(oi) : null
   const oiPct = oiCurrentNum !== null && oiInitial !== null && oiInitial > 0
@@ -101,15 +130,30 @@ function buildMetrics(params: {
     ? 'Waiting for OKX open interest'
     : `${oiPct !== null ? `${oiPct >= 0 ? '+' : ''}${oiPct.toFixed(2)}% in session · ` : ''}OKX${oiStale ? ' · stale' : ''}`
 
+  const oiPlain = oi === null
+    ? 'Waiting for open interest data to see if new leveraged money is entering or leaving the market.'
+    : oiPct !== null && oiPct > 0.01
+      ? `New money is entering the market (${oiPct >= 0 ? '+' : ''}${oiPct.toFixed(2)}%)! This means traders are opening fresh leveraged contracts rather than closing old ones.`
+      : oiPct !== null && oiPct < -0.01
+        ? `Money is leaving the market (${oiPct.toFixed(2)}%)! This means traders are closing out their leveraged positions (taking profit, stopping out, or getting liquidated).`
+        : 'Open interest is steady — roughly the same number of leveraged contracts are open as when the session started.'
+
   const totalLiqUsd = liquidations.reduce((sum, l) => sum + l.notionalUsd, 0)
   const longLiqUsd = liquidations.filter(l => l.side === 'long').reduce((sum, l) => sum + l.notionalUsd, 0)
   const shortLiqUsd = totalLiqUsd - longLiqUsd
   const longShare = totalLiqUsd > 0 ? Math.round((longLiqUsd / totalLiqUsd) * 100) : 0
+  const isHighLiq = totalLiqUsd >= 25_000
   const liqDesc = totalLiqUsd === 0
-    ? 'No reported liquidations in session'
+    ? 'No forced liquidations yet in session'
     : longLiqUsd >= shortLiqUsd
-      ? `${longShare}% long liquidations (${liquidations.length} reported)`
-      : `${100 - longShare}% short liquidations (${liquidations.length} reported)`
+      ? `${isHighLiq ? 'High liquidation event! ' : ''}${longShare}% buyers (longs) forced out`
+      : `${isHighLiq ? 'High liquidation event! ' : ''}${100 - longShare}% sellers (shorts) squeezed`
+
+  const liqPlain = totalLiqUsd === 0
+    ? 'No liquidations reported yet! Nobody has been forced out of their leveraged trades during this session.'
+    : longLiqUsd >= shortLiqUsd
+      ? `${isHighLiq ? 'High liquidation event! ' : ''}This means over-leveraged buyers (longs) lost their margin as price dropped and the exchange forced them to sell (${formatUsdCompact(longLiqUsd)} longs vs ${formatUsdCompact(shortLiqUsd)} shorts). Forced selling like this can speed up a drop — or mark exhaustion once the last weak buyers are flushed out.`
+      : `${isHighLiq ? 'High liquidation event! ' : ''}This means over-leveraged sellers (shorts) got squeezed as price rose and the exchange forced them to buy back (${formatUsdCompact(shortLiqUsd)} shorts vs ${formatUsdCompact(longLiqUsd)} longs). Forced buying like this adds rocket fuel to an upward move.`
 
   return [
     {
@@ -117,7 +161,8 @@ function buildMetrics(params: {
       label: 'Volume Delta',
       value: delta === null ? '—' : formatSignedBtc(delta),
       description: deltaDesc,
-      detail: `Taker buy volume minus taker sell volume in the current UTC minute on OKX BTC-USDT-SWAP. Delta measures executed market orders, not resting limit orders. ${coverageNote}`,
+      plainSummary: deltaPlain,
+      detail: `${deltaPlain} (Technical: Taker buy volume minus taker sell volume in the current UTC minute on OKX BTC-USDT-SWAP. ${coverageNote})`,
       color: deltaColor,
       bars: scaleSparklineBars(deltaSeries),
     },
@@ -126,16 +171,19 @@ function buildMetrics(params: {
       label: 'Cumulative Volume Delta',
       value: cvd === null ? '—' : formatSignedBtc(cvd),
       description: cvdDesc,
-      detail: `Running sum of executed trade delta anchored at ${new Date(anchor).toISOString()}. ${coverageNote}`,
+      plainSummary: cvdPlain,
+      detail: `${cvdPlain} (Technical: Running sum of executed trade delta anchored at ${new Date(anchor).toISOString()}. ${coverageNote})`,
       color: 'blue',
       bars: scaleSparklineBars(cvdSeries),
+      cvdMedian,
     },
     {
       id: 'oi',
       label: 'Open Interest',
       value: oi === null ? '—' : formatOiBtc(oi),
       description: oiDesc,
-      detail: `Outstanding OKX BTC-USDT-SWAP contracts converted to BTC (${oi ?? '—'} BTC raw). ${oiTime ? `Last reported ${new Date(oiTime).toISOString()}${oiStale ? ' (stale)' : ''}.` : 'Waiting for initial open-interest push.'} A rise alone does not reveal whether new positions are net long or short.`,
+      plainSummary: oiPlain,
+      detail: `${oiPlain} (Technical: Outstanding OKX BTC-USDT-SWAP contracts converted to BTC (${oi ?? '—'} BTC raw). ${oiTime ? `Last reported ${new Date(oiTime).toISOString()}${oiStale ? ' (stale)' : ''}.` : 'Waiting for initial open-interest push.'})`,
       color: 'amber',
       bars: scaleSparklineBars(oiSeries.length > 1 ? oiSeries.map(v => v - (oiInitial ?? v)) : oiSeries),
     },
@@ -144,7 +192,8 @@ function buildMetrics(params: {
       label: 'Liquidations',
       value: formatUsdCompact(totalLiqUsd),
       description: liqDesc,
-      detail: `Reported forced closures on OKX BTC-USDT-SWAP since ${new Date(anchor).toISOString()}. Long liquidations: ${formatUsdCompact(longLiqUsd)} · Short liquidations: ${formatUsdCompact(shortLiqUsd)}. Exchange feeds are sampled and do not represent complete liquidation coverage.`,
+      plainSummary: liqPlain,
+      detail: `${liqPlain} (Technical: Reported forced closures on OKX BTC-USDT-SWAP since ${new Date(anchor).toISOString()}. Long liquidations: ${formatUsdCompact(longLiqUsd)} · Short liquidations: ${formatUsdCompact(shortLiqUsd)}.)`,
       color: 'rose',
       bars: scaleSparklineBars(liqSeries),
     },
@@ -168,6 +217,7 @@ export function useLiveMarketData(): LiveDashboardState {
         cvd: null,
         deltaSeries: [],
         cvdSeries: [],
+        volumeSeries: [],
         oi: null,
         oiInitial: null,
         oiSeries: [],
@@ -187,6 +237,13 @@ export function useLiveMarketData(): LiveDashboardState {
         oiEndBtc: null,
         longLiqUsd: 0,
         shortLiqUsd: 0,
+      }),
+      oiRegime: evaluateOiRegime({
+        priceStart: null,
+        priceEnd: null,
+        volumeSeriesBtc: [],
+        oiStartBtc: null,
+        oiEndBtc: null,
       }),
       events: [],
     }
@@ -221,6 +278,7 @@ export function useLiveMarketData(): LiveDashboardState {
       let cvd: bigint | null = null
       let deltaSeries: number[] = []
       let cvdSeries: number[] = []
+      let volumeSeries: number[] = []
       if (trades.length) {
         try {
           const end = Math.max(anchor + minute, Math.floor(now / minute) * minute + minute)
@@ -229,6 +287,7 @@ export function useLiveMarketData(): LiveDashboardState {
           cvd = b[b.length - 1].cvd
           deltaSeries = b.slice(-12).map(bucket => Number(bucket.delta) / 1e8)
           cvdSeries = b.slice(-12).map(bucket => Number(bucket.cvd) / 1e8)
+          volumeSeries = b.slice(-12).map(bucket => Number(bucket.volume) / 1e8)
         } catch {
           status = 'Data error'
           gap = true
@@ -252,7 +311,10 @@ export function useLiveMarketData(): LiveDashboardState {
             title: delta > 0n ? 'Elevated taker buying delta' : 'Elevated taker selling delta',
             value: formatSignedBtc(delta),
             color: delta > 0n ? 'teal' : 'rose',
-            description: `Net taker delta reached ${formatSignedBtc(delta)} in the current UTC minute on OKX BTC-USDT-SWAP.`,
+            description:
+              delta > 0n
+                ? `Big buying wave! Buyers aggressively market-bought ${formatSignedBtc(delta)} more than sellers in this minute — they are rushing in at market price.`
+                : `Big selling wave! Sellers aggressively market-sold ${formatSignedBtc(delta)} more than buyers in this minute — they are dumping into the bid.`,
             time: updated ?? now,
           })
         }
@@ -263,6 +325,7 @@ export function useLiveMarketData(): LiveDashboardState {
         cvd,
         deltaSeries,
         cvdSeries,
+        volumeSeries,
         oi,
         oiInitial,
         oiSeries: oiHistory,
@@ -274,15 +337,26 @@ export function useLiveMarketData(): LiveDashboardState {
         gap,
       })
 
+      const priceEndNum = lastPrice !== null ? Number(lastPrice) : null
+      const oiEndNum = oi !== null ? Number(oi) : null
+
       const pulse = evaluateMarketPulse({
         priceStart: firstPrice,
-        priceEnd: lastPrice !== null ? Number(lastPrice) : null,
+        priceEnd: priceEndNum,
         deltaSats: delta,
         cvdChangeSats: cvd,
         oiStartBtc: oiInitial,
-        oiEndBtc: oi !== null ? Number(oi) : null,
+        oiEndBtc: oiEndNum,
         longLiqUsd,
         shortLiqUsd,
+      })
+
+      const oiRegime = evaluateOiRegime({
+        priceStart: firstPrice,
+        priceEnd: priceEndNum,
+        volumeSeriesBtc: volumeSeries,
+        oiStartBtc: oiInitial,
+        oiEndBtc: oiEndNum,
       })
 
       setState({
@@ -296,6 +370,7 @@ export function useLiveMarketData(): LiveDashboardState {
         oiStale,
         metrics,
         pulse,
+        oiRegime,
         events: Array.from(eventsMap.values()).sort((a, b) => b.time - a.time).slice(0, 20),
       })
     }
@@ -368,11 +443,14 @@ export function useLiveMarketData(): LiveDashboardState {
                   if (item.notionalUsd >= 25_000) {
                     eventsMap.set(`liq-${item.id}`, {
                       id: `liq-${item.id}`,
-                      tag: 'REPORTED LIQUIDATION',
+                      tag: 'HIGH LIQUIDATION EVENT',
                       title: `Large ${item.side} liquidation`,
                       value: `${formatUsdCompact(item.notionalUsd)} ${item.side}s`,
                       color: item.side === 'long' ? 'rose' : 'teal',
-                      description: `Reported forced ${item.side} closure of ${item.btc} BTC near $${item.price} on OKX BTC-USDT-SWAP.`,
+                      description:
+                        item.side === 'long'
+                          ? `High liquidation event! This means over-leveraged buyers (longs) were forced to sell ${item.btc} BTC near $${item.price}, adding sudden downward selling pressure.`
+                          : `High liquidation event! This means over-leveraged sellers (shorts) were forced to buy back ${item.btc} BTC near $${item.price}, adding sudden upward buying fuel.`,
                       time: item.time,
                     })
                   }

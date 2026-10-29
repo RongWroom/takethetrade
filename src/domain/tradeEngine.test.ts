@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { btcToSatoshis, evaluateMarketPulse, replayTrades, scaleSparklineBars, type Trade } from './tradeEngine'
+import {
+  btcToSatoshis,
+  calculateCvdMedianProfile,
+  evaluateMarketPulse,
+  evaluateOiRegime,
+  replayTrades,
+  scaleSparklineBars,
+  type Trade,
+} from './tradeEngine'
 
 const trade = (id: string, time: number, side: Trade['side'], quantityBtc: string): Trade => ({ exchange: 'demo', symbol: 'BTC', id, time, side, quantityBtc })
 const options = { exchange: 'demo', symbol: 'BTC', start: 0, end: 3000, bucketMs: 1000 }
@@ -47,7 +55,7 @@ describe('market pulse and sparkline scaling', () => {
     expect(res.headline).toBe('Insufficient data')
   })
 
-  it('matches deterministic rules for buying support and absorption', () => {
+  it('matches deterministic rules for buying support, absorption, and high liquidation events', () => {
     const supporting = evaluateMarketPulse({
       priceStart: 80000,
       priceEnd: 80100,
@@ -59,7 +67,7 @@ describe('market pulse and sparkline scaling', () => {
       shortLiqUsd: 0,
     })
     expect(supporting.ruleId).toBe('buying-supporting-price')
-    expect(supporting.headline).toBe('Aggressive buying is supporting the price move.')
+    expect(supporting.headline).toBe('Buyers are stepping in aggressively and pushing price up.')
 
     const absorption = evaluateMarketPulse({
       priceStart: 80000,
@@ -72,6 +80,19 @@ describe('market pulse and sparkline scaling', () => {
       shortLiqUsd: 0,
     })
     expect(absorption.ruleId).toBe('buying-absorption')
+
+    const liqDrop = evaluateMarketPulse({
+      priceStart: 80000,
+      priceEnd: 79500,
+      deltaSats: -500_000_000n,
+      cvdChangeSats: -1_000_000_000n,
+      oiStartBtc: 30000,
+      oiEndBtc: 29900,
+      longLiqUsd: 250_000,
+      shortLiqUsd: 0,
+    })
+    expect(liqDrop.ruleId).toBe('long-liquidations-drop')
+    expect(liqDrop.headline).toContain('High liquidation event!')
   })
 
   it('scales sparkline bars to 12 items within 18..94', () => {
@@ -79,6 +100,58 @@ describe('market pulse and sparkline scaling', () => {
     expect(bars).toHaveLength(12)
     expect(Math.max(...bars)).toBe(94)
     expect(Math.min(...bars)).toBe(18)
+  })
+
+  it('calculates CVD median line and volume above/below median', () => {
+    const profile = calculateCvdMedianProfile([-4, -2, 0, 2, 4], [10, 20, 15, 30, 40])
+    expect(profile.medianBtc).toBe(0)
+    expect(profile.aboveCount).toBe(2)
+    expect(profile.belowCount).toBe(2)
+    expect(profile.aboveVolumeBtc).toBe(70)
+    expect(profile.belowVolumeBtc).toBe(30)
+    expect(profile.bars).toHaveLength(12)
+  })
+
+  it('calculates all 4 Open Interest + Price + Volume regimes', () => {
+    expect(
+      evaluateOiRegime({
+        priceStart: 80000,
+        priceEnd: 80500,
+        volumeSeriesBtc: [10, 25],
+        oiStartBtc: 30000,
+        oiEndBtc: 30500,
+      }).activeRowId,
+    ).toBe('strong-uptrend')
+
+    expect(
+      evaluateOiRegime({
+        priceStart: 80000,
+        priceEnd: 80500,
+        volumeSeriesBtc: [25, 10],
+        oiStartBtc: 30500,
+        oiEndBtc: 30000,
+      }).activeRowId,
+    ).toBe('weak-uptrend')
+
+    expect(
+      evaluateOiRegime({
+        priceStart: 80500,
+        priceEnd: 80000,
+        volumeSeriesBtc: [10, 25],
+        oiStartBtc: 30000,
+        oiEndBtc: 30500,
+      }).activeRowId,
+    ).toBe('strong-downtrend')
+
+    expect(
+      evaluateOiRegime({
+        priceStart: 80500,
+        priceEnd: 80000,
+        volumeSeriesBtc: [25, 10],
+        oiStartBtc: 30500,
+        oiEndBtc: 30000,
+      }).activeRowId,
+    ).toBe('weak-downtrend')
   })
 })
 

@@ -17,6 +17,11 @@ test('opens each metric and pulse evidence in the live-first layout', async ({ p
   await expect(page.getByText(/Observed evidence/)).toBeVisible()
   await page.keyboard.press('Escape')
   await expect(page.getByRole('dialog')).not.toBeVisible()
+
+  await page.getByText('Cumulative Volume Delta').first().click()
+  await expect(page.getByText('ExoCharts Median View')).toBeVisible()
+  await expect(page.getByLabel('CVD median volume chart')).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Price, Volume & Open Interest Matrix' })).toBeVisible()
 })
 
 test('focus mode and live event dismissal work', async ({ page }) => {
