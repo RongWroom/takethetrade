@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { TIMEFRAME_OPTIONS, type TimeframeId } from './data/okx'
 import { OI_CHEAT_SHEET_ROWS, type CvdMedianProfile } from './domain/tradeEngine'
 import { useLiveMarketData } from './features/LiveOverview'
 import type { Metric } from './fixtures/demo'
@@ -12,16 +13,18 @@ function formatSignedBtcNum(n: number): string {
   return `${sign}${abs.toFixed(2)} BTC`
 }
 
-function CvdMedianChart({ profile }: { profile: CvdMedianProfile }) {
+function CvdMedianChart({ profile, bucketSuffix = 'm' }: { profile: CvdMedianProfile; bucketSuffix?: string }) {
   return (
     <div className="cvd-median-wrap">
       <div className="cvd-median-stats">
         <span className="above-stat">
-          ▲ Above median: <strong>{profile.aboveVolumeBtc.toFixed(2)} BTC</strong> ({profile.aboveCount}m)
+          ▲ Above: <strong>{profile.aboveVolumeBtc.toFixed(2)} BTC</strong> ({profile.aboveCount}
+          {bucketSuffix})
         </span>
         <span className="median-badge">Median {formatSignedBtcNum(profile.medianBtc)}</span>
         <span className="below-stat">
-          ▼ Below median: <strong>{profile.belowVolumeBtc.toFixed(2)} BTC</strong> ({profile.belowCount}m)
+          ▼ Below: <strong>{profile.belowVolumeBtc.toFixed(2)} BTC</strong> ({profile.belowCount}
+          {bucketSuffix})
         </span>
       </div>
       <div className="cvd-median-chart" aria-label="CVD median volume chart">
@@ -57,10 +60,12 @@ function CvdMedianChart({ profile }: { profile: CvdMedianProfile }) {
 function App() {
   const [panel, setPanel] = useState<Panel>(null)
   const [focus, setFocus] = useState(false)
+  const [timeframe, setTimeframe] = useState<TimeframeId>('1m')
+  const [showFullMatrix, setShowFullMatrix] = useState(false)
   const [dismissedIds, setDismissedIds] = useState<string[]>([])
   const [flippedCards, setFlippedCards] = useState<Record<string, boolean>>({})
   const dialog = useRef<HTMLDialogElement>(null)
-  const live = useLiveMarketData()
+  const live = useLiveMarketData(timeframe)
 
   const activeMetric = typeof panel === 'string' ? live.metrics.find(m => m.id === panel) ?? null : null
   const visibleEvents = live.events.filter(ev => !dismissedIds.includes(ev.id))
@@ -101,20 +106,35 @@ function App() {
           </button>
           <button onClick={() => setPanel('settings')}>Settings</button>
         </nav>
-        <span className="demo-pill">
-          <span /> {live.status}
-        </span>
+        <div className="topbar-right">
+          <div className="timeframe-picker" role="group" aria-label="Select timeframe">
+            {TIMEFRAME_OPTIONS.map(tf => (
+              <button
+                key={tf.id}
+                type="button"
+                className={`tf-btn ${timeframe === tf.id ? 'active' : ''}`}
+                aria-pressed={timeframe === tf.id}
+                onClick={() => setTimeframe(tf.id)}
+              >
+                {tf.shortLabel}
+              </button>
+            ))}
+          </div>
+          <span className="demo-pill">
+            <span /> {live.status}
+          </span>
+        </div>
       </header>
       <main id="overview" className="container">
         <div className="intro">
           <div>
-            <p className="eyebrow">YOUR MARKET OVERVIEW</p>
+            <p className="eyebrow">YOUR MARKET OVERVIEW · {timeframe.toUpperCase()} WINDOW</p>
             <h1>Clarity in the flow.</h1>
-            <p className="muted">Plain-English translations of what buyers and sellers are doing right now.</p>
+            <p className="muted">Plain-English order flow for buyers and sellers.</p>
           </div>
           <div className="market">
             <span>
-              BTC-USDT-SWAP <span className="demo-label">OKX LIVE</span>
+              BTC-USDT-SWAP <span className="demo-label">OKX LIVE · {timeframe.toUpperCase()}</span>
             </span>
             <strong>{live.price ?? '—'}</strong>
             <small>
@@ -130,7 +150,7 @@ function App() {
             <h2>Order flow at a glance</h2>
           </div>
           <span className="muted section-note">
-            Session {new Date(live.anchor).toISOString().slice(11, 16)} UTC · tap any box to flip it over
+            {live.timeframeLabel} window · Anchor {new Date(live.anchor).toISOString().slice(11, 16)} UTC · tap any box to flip
           </span>
         </div>
         <div className="grid">
@@ -154,7 +174,7 @@ function App() {
                 <span className="card-head">
                   <span>
                     {m.label}
-                    <small className="flip-hint">{isFlipped ? ' · Flipped ↺' : ' · Tap to flip ↻'}</small>
+                    <small className="flip-hint">{isFlipped ? ' · Flipped ↺' : ' · Flip ↻'}</small>
                   </span>
                   <button
                     type="button"
@@ -220,7 +240,7 @@ function App() {
                     )}
                     {!focus && (
                       <span className="card-foot">
-                        <span>Tap box to flip back ↺</span>
+                        <span>Tap to flip back ↺</span>
                         <span
                           className="detail-trigger"
                           onClick={e => {
@@ -238,107 +258,125 @@ function App() {
             )
           })}
         </div>
-        <button className="pulse" onClick={() => setPanel('pulse')}>
-          <span className="pulse-head">
-            <span>
-              <span className="pulse-icon">•</span> Market Pulse (Plain English)
+
+        <div className={`synthesis-grid ${focus ? 'is-focus' : ''}`}>
+          <button className="pulse" onClick={() => setPanel('pulse')}>
+            <span className="pulse-head">
+              <span>
+                <span className="pulse-icon">•</span> Market Pulse ({timeframe})
+              </span>
+              <span className="observation">{live.pulse.observation}</span>
             </span>
-            <span className="observation">{live.pulse.observation}</span>
-          </span>
-          <strong>{live.pulse.headline}</strong>
-          <span className="pulse-copy">{live.pulse.copy}</span>
-          <span className="pulse-link">
-            Explore the evidence <span>→</span>
-          </span>
-        </button>
+            <strong>{live.pulse.headline}</strong>
+            <span className="pulse-copy">{live.pulse.copy}</span>
+            <span className="pulse-link">
+              Explore the evidence <span>→</span>
+            </span>
+          </button>
 
-        {!focus && (
-          <section className="oi-matrix-section" aria-label="Open Interest Cheat Sheet Calculator">
-            <div className="oi-matrix-header">
-              <div>
-                <p className="eyebrow">OPEN INTEREST CALCULATOR</p>
-                <h2>Price, Volume &amp; Open Interest Matrix</h2>
+          {!focus && (
+            <section className="oi-matrix-section" aria-label="Open Interest Cheat Sheet Calculator">
+              <div className="oi-matrix-header">
+                <div>
+                  <p className="eyebrow">OPEN INTEREST CALCULATOR · {timeframe.toUpperCase()}</p>
+                  <h2>Price, Volume &amp; Open Interest Matrix</h2>
+                </div>
+                <div className="oi-live-verdict">
+                  {live.oiRegime.activeRow ? (
+                    <span className={`verdict-pill ${live.oiRegime.activeRow.sentiment.toLowerCase()}`}>
+                      {live.oiRegime.activeRow.marketTitle} · {live.oiRegime.activeRow.sentiment}
+                    </span>
+                  ) : (
+                    <span className="verdict-pill neutral">Waiting for movement</span>
+                  )}
+                </div>
               </div>
-              <div className="oi-live-verdict">
-                {live.oiRegime.activeRow ? (
-                  <span className={`verdict-pill ${live.oiRegime.activeRow.sentiment.toLowerCase()}`}>
-                    Live: {live.oiRegime.activeRow.marketTitle} · {live.oiRegime.activeRow.sentiment}
-                  </span>
-                ) : (
-                  <span className="verdict-pill neutral">Waiting for price &amp; OI movement</span>
-                )}
-              </div>
-            </div>
 
-            <div className="oi-live-strip">
-              <div className="oi-signal-pill">
-                <small>Price</small>
-                <strong className={live.oiRegime.priceDirection === 'rising' ? 'up' : live.oiRegime.priceDirection === 'declining' ? 'down' : ''}>
-                  {live.oiRegime.priceDirection === 'rising' ? '↑ rising' : live.oiRegime.priceDirection === 'declining' ? '↓ declining' : '→ flat'}
-                </strong>
+              <div className="oi-live-strip">
+                <div className="oi-signal-pill">
+                  <small>Price</small>
+                  <strong className={live.oiRegime.priceDirection === 'rising' ? 'up' : live.oiRegime.priceDirection === 'declining' ? 'down' : ''}>
+                    {live.oiRegime.priceDirection === 'rising' ? '↑ rising' : live.oiRegime.priceDirection === 'declining' ? '↓ declining' : '→ flat'}
+                  </strong>
+                </div>
+                <div className="oi-signal-pill">
+                  <small>Volume</small>
+                  <strong className={live.oiRegime.volumeDirection === 'increasing' ? 'up' : live.oiRegime.volumeDirection === 'decreasing' ? 'down' : ''}>
+                    {live.oiRegime.volumeDirection === 'increasing' ? '↑ increasing' : live.oiRegime.volumeDirection === 'decreasing' ? '↓ decreasing' : '→ flat'}
+                  </strong>
+                </div>
+                <div className="oi-signal-pill">
+                  <small>Open interest</small>
+                  <strong className={live.oiRegime.oiDirection === 'increasing' ? 'up' : live.oiRegime.oiDirection === 'decreasing' ? 'down' : ''}>
+                    {live.oiRegime.oiDirection === 'increasing' ? '↑ increasing' : live.oiRegime.oiDirection === 'decreasing' ? '↓ decreasing' : '→ flat'}
+                  </strong>
+                </div>
+                <div className="oi-signal-pill verdict-cell">
+                  <small>Market</small>
+                  <strong>
+                    {live.oiRegime.activeRow
+                      ? `${live.oiRegime.activeRow.marketTitle} - ${live.oiRegime.activeRow.sentiment}`
+                      : 'Baseline...'}
+                  </strong>
+                </div>
               </div>
-              <div className="oi-signal-pill">
-                <small>Volume</small>
-                <strong className={live.oiRegime.volumeDirection === 'increasing' ? 'up' : live.oiRegime.volumeDirection === 'decreasing' ? 'down' : ''}>
-                  {live.oiRegime.volumeDirection === 'increasing' ? '↑ increasing' : live.oiRegime.volumeDirection === 'decreasing' ? '↓ decreasing' : '→ flat'}
-                </strong>
-              </div>
-              <div className="oi-signal-pill">
-                <small>Open interest</small>
-                <strong className={live.oiRegime.oiDirection === 'increasing' ? 'up' : live.oiRegime.oiDirection === 'decreasing' ? 'down' : ''}>
-                  {live.oiRegime.oiDirection === 'increasing' ? '↑ increasing' : live.oiRegime.oiDirection === 'decreasing' ? '↓ decreasing' : '→ flat'}
-                </strong>
-              </div>
-              <div className="oi-signal-pill verdict-cell">
-                <small>Market</small>
-                <strong>
-                  {live.oiRegime.activeRow
-                    ? `${live.oiRegime.activeRow.marketTitle} - ${live.oiRegime.activeRow.sentiment}`
-                    : 'Calculating baseline...'}
-                </strong>
-              </div>
-            </div>
 
-            <div className="oi-cheat-table">
-              <div className="oi-table-cols" aria-hidden="true">
-                <span>Price</span>
-                <span>Volume</span>
-                <span>Open interest</span>
-                <span>Market</span>
+              {live.oiRegime.activeRow && !showFullMatrix && (
+                <div className="oi-active-summary">
+                  <span className="live-match-badge">LIVE NOW</span>
+                  <p>{live.oiRegime.activeRow.plainEnglish}</p>
+                </div>
+              )}
+
+              <div className="oi-matrix-toggle-bar">
+                <span className="oi-mini-note">{live.oiRegime.continuationNote}</span>
+                <button
+                  type="button"
+                  className="matrix-toggle-btn"
+                  aria-expanded={showFullMatrix}
+                  onClick={() => setShowFullMatrix(prev => !prev)}
+                >
+                  {showFullMatrix ? 'Hide reference table ↑' : 'Cheat sheet (4 regimes) ↓'}
+                </button>
               </div>
-              {OI_CHEAT_SHEET_ROWS.map(row => {
-                const isActive = live.oiRegime.activeRowId === row.id
-                return (
-                  <div key={row.id} className={`oi-cheat-row ${isActive ? 'active' : ''}`}>
-                    <div className="oi-row-signals">
-                      <span className={`sig ${row.priceLabel === 'rising' ? 'up' : 'down'}`}>
-                        <i>{row.priceLabel === 'rising' ? '↑' : '↓'}</i> {row.priceLabel}
-                      </span>
-                      <span className={`sig ${row.volumeLabel === 'increasing' ? 'up' : 'down'}`}>
-                        <i>{row.volumeLabel === 'increasing' ? '↑' : '↓'}</i> {row.volumeLabel}
-                      </span>
-                      <span className={`sig ${row.oiLabel === 'increasing' ? 'up' : 'down'}`}>
-                        <i>{row.oiLabel === 'increasing' ? '↑' : '↓'}</i> {row.oiLabel}
-                      </span>
-                      <span className="sig-market">
-                        <strong>{row.marketTitle}</strong> -{' '}
-                        <em className={row.sentiment.toLowerCase()}>{row.sentiment}</em>
-                        {isActive && <span className="live-match-badge">LIVE NOW</span>}
-                      </span>
-                    </div>
-                    <p className="oi-row-desc">{row.plainEnglish}</p>
-                    <p className="oi-row-sub">{row.explanation}</p>
+
+              {showFullMatrix && (
+                <div className="oi-cheat-table">
+                  <div className="oi-table-cols" aria-hidden="true">
+                    <span>Price</span>
+                    <span>Volume</span>
+                    <span>Open interest</span>
+                    <span>Market</span>
                   </div>
-                )
-              })}
-            </div>
-
-            <div className="oi-continuation-note">
-              <span className="note-icon">ⓘ</span>
-              <p>{live.oiRegime.continuationNote}</p>
-            </div>
-          </section>
-        )}
+                  {OI_CHEAT_SHEET_ROWS.map(row => {
+                    const isActive = live.oiRegime.activeRowId === row.id
+                    return (
+                      <div key={row.id} className={`oi-cheat-row ${isActive ? 'active' : ''}`}>
+                        <div className="oi-row-signals">
+                          <span className={`sig ${row.priceLabel === 'rising' ? 'up' : 'down'}`}>
+                            <i>{row.priceLabel === 'rising' ? '↑' : '↓'}</i> {row.priceLabel}
+                          </span>
+                          <span className={`sig ${row.volumeLabel === 'increasing' ? 'up' : 'down'}`}>
+                            <i>{row.volumeLabel === 'increasing' ? '↑' : '↓'}</i> {row.volumeLabel}
+                          </span>
+                          <span className={`sig ${row.oiLabel === 'increasing' ? 'up' : 'down'}`}>
+                            <i>{row.oiLabel === 'increasing' ? '↑' : '↓'}</i> {row.oiLabel}
+                          </span>
+                          <span className="sig-market">
+                            <strong>{row.marketTitle}</strong> -{' '}
+                            <em className={row.sentiment.toLowerCase()}>{row.sentiment}</em>
+                            {isActive && <span className="live-match-badge">LIVE NOW</span>}
+                          </span>
+                        </div>
+                        <p className="oi-row-desc">{row.plainEnglish}</p>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </section>
+          )}
+        </div>
 
         {!focus && (
           <div className="bottom-row">
@@ -383,7 +421,7 @@ function App() {
         <div className="dialog-content">
           <div className="dialog-head">
             <div>
-              <p className="eyebrow">OKX · BTC-USDT-SWAP</p>
+              <p className="eyebrow">OKX · BTC-USDT-SWAP · {timeframe.toUpperCase()}</p>
               <h2 id="dialog-title">{title}</h2>
             </div>
             <button className="close" onClick={() => setPanel(null)} aria-label="Close dialog">
@@ -403,7 +441,7 @@ function App() {
               <div className="detail-box">
                 <strong>Source &amp; session coverage</strong>
                 <p>
-                  Exchange: OKX public WebSocket (`BTC-USDT-SWAP`) · Session anchor: {new Date(live.anchor).toISOString()} · Status: {live.status}
+                  Exchange: OKX public WebSocket (`BTC-USDT-SWAP`) · Timeframe: {live.timeframeLabel} · Session anchor: {new Date(live.anchor).toISOString()} · Status: {live.status}
                 </p>
                 <p>
                   {live.gap
@@ -421,7 +459,7 @@ function App() {
                 <strong>Observed evidence ({live.pulse.ruleId})</strong>
                 <p>{live.pulse.evidence}</p>
                 <p>
-                  Deterministic rule evaluation from live OKX session inputs. Interpretive context only; no probabilities or trading advice are generated.
+                  Deterministic rule evaluation from live OKX {live.timeframeLabel} inputs. Interpretive context only; no probabilities or trading advice are generated.
                 </p>
               </div>
             </>
@@ -460,7 +498,7 @@ function App() {
               </label>
               <div className="detail-box">
                 <strong>Data health &amp; connection</strong>
-                <p>Status: {live.status} · Feed: OKX BTC-USDT-SWAP public WebSocket</p>
+                <p>Status: {live.status} · Timeframe: {live.timeframeLabel} · Feed: OKX BTC-USDT-SWAP</p>
                 <p>
                   Session anchor: {new Date(live.anchor).toISOString()}
                   {live.updated ? ` · Last trade: ${new Date(live.updated).toISOString()}` : ' · Waiting for first trade'}

@@ -1,5 +1,19 @@
-import { useEffect, useState } from 'react'
-import { normalizeOkxLiquidationOrders, normalizeOkxOpenInterest, normalizeOkxTrade, type Liquidation } from '../data/okx'
+import { useEffect, useRef, useState } from 'react'
+import {
+  getTimeframeOption,
+  normalizeOkxCandles,
+  normalizeOkxLiquidationOrders,
+  normalizeOkxOiHistory,
+  normalizeOkxOpenInterest,
+  normalizeOkxTakerVolume,
+  normalizeOkxTrade,
+  type Liquidation,
+  type OkxCandlePoint,
+  type OkxOiHistoryPoint,
+  type OkxTakerVolumeBucket,
+  type TimeframeId,
+  type TimeframeOption,
+} from '../data/okx'
 import {
   calculateCvdMedianProfile,
   evaluateMarketPulse,
@@ -57,6 +71,8 @@ export type LiveDashboardState = {
   status: string
   price: string | null
   rawPrice: string | null
+  timeframe: TimeframeId
+  timeframeLabel: string
   anchor: number
   updated: number | null
   gap: boolean
@@ -69,6 +85,7 @@ export type LiveDashboardState = {
 }
 
 function buildMetrics(params: {
+  timeframe: TimeframeOption
   delta: bigint | null
   cvd: bigint | null
   deltaSeries: number[]
@@ -84,43 +101,44 @@ function buildMetrics(params: {
   anchor: number
   gap: boolean
 }): Metric[] {
-  const { delta, cvd, deltaSeries, cvdSeries, volumeSeries, oi, oiInitial, oiSeries, oiTime, oiStale, liquidations, liqSeries, anchor, gap } = params
+  const { timeframe, delta, cvd, deltaSeries, cvdSeries, volumeSeries, oi, oiInitial, oiSeries, oiTime, oiStale, liquidations, liqSeries, anchor, gap } = params
+  const tfText = timeframe.id === '1m' ? 'this minute' : `this ${timeframe.shortLabel} window`
   const coverageNote = gap ? 'Incomplete coverage: session starts on page load with no backfill.' : 'Continuous session coverage since anchor.'
 
   const deltaColor = delta !== null && delta < 0n ? 'rose' : 'teal'
   const deltaDesc = delta === null
     ? 'Waiting for live trades'
     : delta > 0n
-      ? 'Buyers are hitting the ask · this minute'
+      ? `Buyers hitting the ask · ${tfText}`
       : delta < 0n
-        ? 'Sellers are hitting the bid · this minute'
-        : 'Buyers & sellers evenly matched · this minute'
+        ? `Sellers hitting the bid · ${tfText}`
+        : `Buyers & sellers matched · ${tfText}`
 
   const deltaPlain = delta === null
     ? 'Waiting for trades to see whether buyers or sellers are more impatient right now.'
     : delta > 0n
-      ? `Buyers are more aggressive right now! This means traders have market-bought ${formatSignedBtc(delta)} more than they sold this minute — they are willing to pay up immediately instead of waiting.`
+      ? `Buyers are more aggressive in ${tfText}! Traders market-bought ${formatSignedBtc(delta)} more than they sold — paying up immediately instead of waiting.`
       : delta < 0n
-        ? `Sellers are more aggressive right now! This means traders have market-sold ${formatSignedBtc(delta)} more than they bought this minute — they are rushing to sell at current prices.`
-        : 'Buyers and sellers are completely balanced this minute — neither side is pushing harder with market orders.'
+        ? `Sellers are more aggressive in ${tfText}! Traders market-sold ${formatSignedBtc(delta)} more than they bought — rushing to sell at current prices.`
+        : `Buyers and sellers are evenly balanced in ${tfText} — neither side is pushing harder with market orders.`
 
   const cvdDesc = cvd === null
     ? 'Waiting for session flow'
     : cvd > 0n
-      ? 'More market buying overall · tap to flip median view'
+      ? `Net buying (${timeframe.shortLabel} bars) · tap for median view`
       : cvd < 0n
-        ? 'More market selling overall · tap to flip median view'
-        : 'Balanced session flow · tap to flip median view'
+        ? `Net selling (${timeframe.shortLabel} bars) · tap for median view`
+        : `Balanced (${timeframe.shortLabel} bars) · tap for median view`
 
   const cvdMedian = calculateCvdMedianProfile(cvdSeries, volumeSeries)
 
   const cvdPlain = cvd === null
     ? 'Waiting for trades to track the running tug-of-war between buyers and sellers.'
     : cvd > 0n
-      ? `Buyers are winning the session tug-of-war (${formatSignedBtc(cvd)} net buying). ${cvdMedian.summary}`
+      ? `Buyers are winning the tug-of-war (${formatSignedBtc(cvd)} net buying across ${timeframe.shortLabel} buckets). ${cvdMedian.summary}`
       : cvd < 0n
-        ? `Sellers are winning the session tug-of-war (${formatSignedBtc(cvd)} net selling). ${cvdMedian.summary}`
-        : `Buyers and sellers have canceled each other out since the session began. ${cvdMedian.summary}`
+        ? `Sellers are winning the tug-of-war (${formatSignedBtc(cvd)} net selling across ${timeframe.shortLabel} buckets). ${cvdMedian.summary}`
+        : `Buyers and sellers have canceled each other out across ${timeframe.shortLabel} buckets. ${cvdMedian.summary}`
 
   const oiCurrentNum = oi !== null ? Number(oi) : null
   const oiPct = oiCurrentNum !== null && oiInitial !== null && oiInitial > 0
@@ -128,15 +146,15 @@ function buildMetrics(params: {
     : null
   const oiDesc = oi === null
     ? 'Waiting for OKX open interest'
-    : `${oiPct !== null ? `${oiPct >= 0 ? '+' : ''}${oiPct.toFixed(2)}% in session · ` : ''}OKX${oiStale ? ' · stale' : ''}`
+    : `${oiPct !== null ? `${oiPct >= 0 ? '+' : ''}${oiPct.toFixed(2)}% (${timeframe.shortLabel}) · ` : ''}OKX${oiStale ? ' · stale' : ''}`
 
   const oiPlain = oi === null
     ? 'Waiting for open interest data to see if new leveraged money is entering or leaving the market.'
     : oiPct !== null && oiPct > 0.01
-      ? `New money is entering the market (${oiPct >= 0 ? '+' : ''}${oiPct.toFixed(2)}%)! This means traders are opening fresh leveraged contracts rather than closing old ones.`
+      ? `New money is entering the market (${oiPct >= 0 ? '+' : ''}${oiPct.toFixed(2)}% over ${timeframe.shortLabel})! Traders are opening fresh leveraged contracts.`
       : oiPct !== null && oiPct < -0.01
-        ? `Money is leaving the market (${oiPct.toFixed(2)}%)! This means traders are closing out their leveraged positions (taking profit, stopping out, or getting liquidated).`
-        : 'Open interest is steady — roughly the same number of leveraged contracts are open as when the session started.'
+        ? `Money is leaving the market (${oiPct.toFixed(2)}% over ${timeframe.shortLabel})! Traders are closing out their leveraged positions.`
+        : `Open interest is steady over ${timeframe.shortLabel} — roughly the same number of leveraged contracts are open.`
 
   const totalLiqUsd = liquidations.reduce((sum, l) => sum + l.notionalUsd, 0)
   const longLiqUsd = liquidations.filter(l => l.side === 'long').reduce((sum, l) => sum + l.notionalUsd, 0)
@@ -144,16 +162,16 @@ function buildMetrics(params: {
   const longShare = totalLiqUsd > 0 ? Math.round((longLiqUsd / totalLiqUsd) * 100) : 0
   const isHighLiq = totalLiqUsd >= 25_000
   const liqDesc = totalLiqUsd === 0
-    ? 'No forced liquidations yet in session'
+    ? `No forced liquidations in ${timeframe.shortLabel} window`
     : longLiqUsd >= shortLiqUsd
-      ? `${isHighLiq ? 'High liquidation event! ' : ''}${longShare}% buyers (longs) forced out`
-      : `${isHighLiq ? 'High liquidation event! ' : ''}${100 - longShare}% sellers (shorts) squeezed`
+      ? `${isHighLiq ? 'High liquidation event! ' : ''}${longShare}% longs forced out (${timeframe.shortLabel})`
+      : `${isHighLiq ? 'High liquidation event! ' : ''}${100 - longShare}% shorts squeezed (${timeframe.shortLabel})`
 
   const liqPlain = totalLiqUsd === 0
-    ? 'No liquidations reported yet! Nobody has been forced out of their leveraged trades during this session.'
+    ? `No liquidations reported in ${tfText}. Nobody has been forced out of their leveraged trades.`
     : longLiqUsd >= shortLiqUsd
-      ? `${isHighLiq ? 'High liquidation event! ' : ''}This means over-leveraged buyers (longs) lost their margin as price dropped and the exchange forced them to sell (${formatUsdCompact(longLiqUsd)} longs vs ${formatUsdCompact(shortLiqUsd)} shorts). Forced selling like this can speed up a drop — or mark exhaustion once the last weak buyers are flushed out.`
-      : `${isHighLiq ? 'High liquidation event! ' : ''}This means over-leveraged sellers (shorts) got squeezed as price rose and the exchange forced them to buy back (${formatUsdCompact(shortLiqUsd)} shorts vs ${formatUsdCompact(longLiqUsd)} longs). Forced buying like this adds rocket fuel to an upward move.`
+      ? `${isHighLiq ? 'High liquidation event! ' : ''}Over-leveraged buyers (longs) lost their margin as price dropped and were forced to sell (${formatUsdCompact(longLiqUsd)} longs vs ${formatUsdCompact(shortLiqUsd)} shorts).`
+      : `${isHighLiq ? 'High liquidation event! ' : ''}Over-leveraged sellers (shorts) got squeezed as price rose and were forced to buy back (${formatUsdCompact(shortLiqUsd)} shorts vs ${formatUsdCompact(longLiqUsd)} longs).`
 
   return [
     {
@@ -162,7 +180,7 @@ function buildMetrics(params: {
       value: delta === null ? '—' : formatSignedBtc(delta),
       description: deltaDesc,
       plainSummary: deltaPlain,
-      detail: `${deltaPlain} (Technical: Taker buy volume minus taker sell volume in the current UTC minute on OKX BTC-USDT-SWAP. ${coverageNote})`,
+      detail: `${deltaPlain} (Technical: Taker buy volume minus taker sell volume in the current ${timeframe.label} bucket on OKX BTC-USDT-SWAP. ${coverageNote})`,
       color: deltaColor,
       bars: scaleSparklineBars(deltaSeries),
     },
@@ -172,7 +190,7 @@ function buildMetrics(params: {
       value: cvd === null ? '—' : formatSignedBtc(cvd),
       description: cvdDesc,
       plainSummary: cvdPlain,
-      detail: `${cvdPlain} (Technical: Running sum of executed trade delta anchored at ${new Date(anchor).toISOString()}. ${coverageNote})`,
+      detail: `${cvdPlain} (Technical: Running sum of executed trade delta across ${timeframe.label} buckets anchored at ${new Date(anchor).toISOString()}. ${coverageNote})`,
       color: 'blue',
       bars: scaleSparklineBars(cvdSeries),
       cvdMedian,
@@ -193,26 +211,46 @@ function buildMetrics(params: {
       value: formatUsdCompact(totalLiqUsd),
       description: liqDesc,
       plainSummary: liqPlain,
-      detail: `${liqPlain} (Technical: Reported forced closures on OKX BTC-USDT-SWAP since ${new Date(anchor).toISOString()}. Long liquidations: ${formatUsdCompact(longLiqUsd)} · Short liquidations: ${formatUsdCompact(shortLiqUsd)}.)`,
+      detail: `${liqPlain} (Technical: Reported forced closures on OKX BTC-USDT-SWAP in ${timeframe.label} window since ${new Date(anchor).toISOString()}. Long liquidations: ${formatUsdCompact(longLiqUsd)} · Short liquidations: ${formatUsdCompact(shortLiqUsd)}.)`,
       color: 'rose',
       bars: scaleSparklineBars(liqSeries),
     },
   ]
 }
 
-export function useLiveMarketData(): LiveDashboardState {
+type RestBackfillCache = Partial<
+  Record<
+    TimeframeId,
+    {
+      candles: OkxCandlePoint[]
+      takerBuckets: OkxTakerVolumeBucket[]
+      oiPoints: OkxOiHistoryPoint[]
+    }
+  >
+>
+
+export function useLiveMarketData(timeframeId: TimeframeId = '1m'): LiveDashboardState {
+  const tfOption = getTimeframeOption(timeframeId)
+  const tfRef = useRef<TimeframeOption>(tfOption)
+
+  const publishRef = useRef<(() => void) | null>(null)
+  const backfillRef = useRef<RestBackfillCache>({})
+
   const [state, setState] = useState<LiveDashboardState>(() => {
-    const anchor = Math.floor(Date.now() / minute) * minute
+    const anchor = Math.floor(Date.now() / tfOption.bucketMs) * tfOption.bucketMs
     return {
       status: 'Connecting',
       price: null,
       rawPrice: null,
+      timeframe: tfOption.id,
+      timeframeLabel: tfOption.label,
       anchor,
       updated: null,
       gap: true,
       oiTime: null,
       oiStale: true,
       metrics: buildMetrics({
+        timeframe: tfOption,
         delta: null,
         cvd: null,
         deltaSeries: [],
@@ -261,28 +299,44 @@ export function useLiveMarketData(): LiveDashboardState {
     let lastPrice: string | null = null
     let updated: number | null = null
     let gap = true
-    let anchor = Math.floor(Date.now() / minute) * minute
-    let trades: Trade[] = []
+    const sessionStart = Date.now()
+    let trades: (Trade & { price: string })[] = []
     let attempts = 0
     let oi: string | null = null
     let oiInitial: number | null = null
     let oiTime: number | null = null
-    const oiHistory: number[] = []
+    const oiHistory: { time: number; btc: number }[] = []
     const seenLiqIds = new Set<string>()
     let liquidations: Liquidation[] = []
     const eventsMap = new Map<string, MarketEventItem>()
 
     const publish = () => {
       const now = Date.now()
+      const tf = tfRef.current
+      const bucketMs = tf.bucketMs
+      const alignedSessionAnchor = Math.floor(sessionStart / bucketMs) * bucketMs
+      const cached = backfillRef.current[tf.id]
+
       let delta: bigint | null = null
       let cvd: bigint | null = null
       let deltaSeries: number[] = []
       let cvdSeries: number[] = []
       let volumeSeries: number[] = []
+      let effectiveAnchor = alignedSessionAnchor
+
       if (trades.length) {
         try {
-          const end = Math.max(anchor + minute, Math.floor(now / minute) * minute + minute)
-          const b = replayTrades(trades, { exchange: 'OKX', symbol: 'BTC-USDT-SWAP', start: anchor, end, bucketMs: minute }).buckets
+          const earliestTradeTime = trades[0].time
+          const replayStart = Math.floor(Math.min(sessionStart, earliestTradeTime) / bucketMs) * bucketMs
+          effectiveAnchor = replayStart
+          const end = Math.max(replayStart + bucketMs, Math.floor(now / bucketMs) * bucketMs + bucketMs)
+          const b = replayTrades(trades, {
+            exchange: 'OKX',
+            symbol: 'BTC-USDT-SWAP',
+            start: replayStart,
+            end,
+            bucketMs,
+          }).buckets
           delta = b[b.length - 1].delta
           cvd = b[b.length - 1].cvd
           deltaSeries = b.slice(-12).map(bucket => Number(bucket.delta) / 1e8)
@@ -295,75 +349,142 @@ export function useLiveMarketData(): LiveDashboardState {
         }
       }
 
+      if (cached && cached.takerBuckets.length > 0) {
+        const currentBucketStart = Math.floor(now / bucketMs) * bucketMs
+        const priorRest = cached.takerBuckets.filter(tb => tb.time < currentBucketStart).slice(-11)
+        if (priorRest.length > 0 && deltaSeries.length <= 1) {
+          const liveCurrentDeltaBtc = delta !== null ? Number(delta) / 1e8 : priorRest[priorRest.length - 1].deltaBtc
+          const liveCurrentVolBtc = volumeSeries.length > 0 ? volumeSeries[volumeSeries.length - 1] : priorRest[priorRest.length - 1].volumeBtc
+          const combinedDeltas = [...priorRest.map(r => r.deltaBtc), ...(delta !== null ? [liveCurrentDeltaBtc] : [])].slice(-12)
+          const combinedVols = [...priorRest.map(r => r.volumeBtc), ...(delta !== null ? [liveCurrentVolBtc] : [])].slice(-12)
+          let runningCvd = 0
+          const combinedCvd = combinedDeltas.map(d => {
+            runningCvd += d
+            return runningCvd
+          })
+          deltaSeries = combinedDeltas
+          volumeSeries = combinedVols
+          cvdSeries = combinedCvd
+          if (delta === null) {
+            delta = BigInt(Math.round(combinedDeltas[combinedDeltas.length - 1] * 1e8))
+          }
+          cvd = BigInt(Math.round(runningCvd * 1e8))
+          effectiveAnchor = priorRest[0].time
+        }
+      }
+
       const effectiveStatus = status === 'Connected' && updated !== null && now - updated > 15000 ? 'Stale' : status
       const oiStale = status !== 'Connected' || oiTime === null || now - oiTime > 15000
-      const longLiqUsd = liquidations.filter(l => l.side === 'long').reduce((s, l) => s + l.notionalUsd, 0)
-      const shortLiqUsd = liquidations.filter(l => l.side === 'short').reduce((s, l) => s + l.notionalUsd, 0)
-      const liqSeries = liquidations.slice(-12).map(l => l.notionalUsd)
+
+      const windowStart = now - Math.max(bucketMs, minute)
+      const windowLiquidations = tf.id === '1m' ? liquidations : liquidations.filter(l => l.time >= windowStart)
+      const activeLiquidations = windowLiquidations.length > 0 ? windowLiquidations : liquidations
+      const longLiqUsd = activeLiquidations.filter(l => l.side === 'long').reduce((s, l) => s + l.notionalUsd, 0)
+      const shortLiqUsd = activeLiquidations.filter(l => l.side === 'short').reduce((s, l) => s + l.notionalUsd, 0)
+      const liqSeries = activeLiquidations.slice(-12).map(l => l.notionalUsd)
 
       if (delta !== null) {
         const absDeltaBtc = Number(delta < 0n ? -delta : delta) / 1e8
         if (absDeltaBtc >= 25) {
-          const minuteKey = `delta-${Math.floor(now / minute)}`
-          eventsMap.set(minuteKey, {
-            id: minuteKey,
-            tag: 'LIVE ORDER FLOW EVENT',
+          const bucketKey = `delta-${tf.id}-${Math.floor(now / bucketMs)}`
+          eventsMap.set(bucketKey, {
+            id: bucketKey,
+            tag: `LIVE ORDER FLOW (${tf.shortLabel.toUpperCase()})`,
             title: delta > 0n ? 'Elevated taker buying delta' : 'Elevated taker selling delta',
             value: formatSignedBtc(delta),
             color: delta > 0n ? 'teal' : 'rose',
             description:
               delta > 0n
-                ? `Big buying wave! Buyers aggressively market-bought ${formatSignedBtc(delta)} more than sellers in this minute — they are rushing in at market price.`
-                : `Big selling wave! Sellers aggressively market-sold ${formatSignedBtc(delta)} more than buyers in this minute — they are dumping into the bid.`,
+                ? `Big buying wave! Buyers aggressively market-bought ${formatSignedBtc(delta)} more than sellers in this ${tf.shortLabel} window.`
+                : `Big selling wave! Sellers aggressively market-sold ${formatSignedBtc(delta)} more than buyers in this ${tf.shortLabel} window.`,
             time: updated ?? now,
           })
         }
       }
 
+      const windowTrades = trades.filter(t => t.time >= now - bucketMs)
+      let tfPriceStart: number | null = firstPrice
+      if (windowTrades.length > 0) {
+        tfPriceStart = Number(windowTrades[0].price)
+      }
+      if (cached && cached.candles.length >= 2 && windowTrades.length <= 1) {
+        tfPriceStart = cached.candles[cached.candles.length - 2].open
+      }
+      const priceEndNum =
+        lastPrice !== null
+          ? Number(lastPrice)
+          : cached && cached.candles.length > 0
+            ? cached.candles[cached.candles.length - 1].close
+            : null
+
+      const windowOi = oiHistory.filter(o => o.time >= now - bucketMs)
+      let tfOiInitial = windowOi.length > 0 ? windowOi[0].btc : oiInitial
+      const oiEndNum = oi !== null ? Number(oi) : null
+      let oiSeriesNums = oiHistory.slice(-24).map(o => o.btc)
+
+      if (cached && cached.oiPoints.length >= 2 && oiSeriesNums.length <= 1 && oiEndNum !== null && priceEndNum !== null && priceEndNum > 0) {
+        const prevOiBtc = cached.oiPoints[cached.oiPoints.length - 2].oiUsd / priceEndNum
+        if (Number.isFinite(prevOiBtc) && prevOiBtc > 0) {
+          tfOiInitial = prevOiBtc
+          oiSeriesNums = [...cached.oiPoints.slice(-11).map(p => p.oiUsd / priceEndNum), oiEndNum]
+        }
+      }
+
+      if (volumeSeries.length === 0 && cached && cached.candles.length > 0) {
+        volumeSeries = cached.candles.slice(-12).map(c => c.volumeBtc)
+      }
+
       const metrics = buildMetrics({
+        timeframe: tf,
         delta,
         cvd,
         deltaSeries,
         cvdSeries,
         volumeSeries,
         oi,
-        oiInitial,
-        oiSeries: oiHistory,
+        oiInitial: tfOiInitial,
+        oiSeries: oiSeriesNums,
         oiTime,
         oiStale,
-        liquidations,
+        liquidations: activeLiquidations,
         liqSeries,
-        anchor,
+        anchor: effectiveAnchor,
         gap,
       })
 
-      const priceEndNum = lastPrice !== null ? Number(lastPrice) : null
-      const oiEndNum = oi !== null ? Number(oi) : null
-
       const pulse = evaluateMarketPulse({
-        priceStart: firstPrice,
+        priceStart: tfPriceStart,
         priceEnd: priceEndNum,
         deltaSats: delta,
         cvdChangeSats: cvd,
-        oiStartBtc: oiInitial,
+        oiStartBtc: tfOiInitial,
         oiEndBtc: oiEndNum,
         longLiqUsd,
         shortLiqUsd,
       })
 
       const oiRegime = evaluateOiRegime({
-        priceStart: firstPrice,
+        priceStart: tfPriceStart,
         priceEnd: priceEndNum,
         volumeSeriesBtc: volumeSeries,
-        oiStartBtc: oiInitial,
+        oiStartBtc: tfOiInitial,
         oiEndBtc: oiEndNum,
       })
 
+      const displayPrice =
+        lastPrice !== null
+          ? formatPrice(lastPrice)
+          : priceEndNum !== null
+            ? formatPrice(String(priceEndNum))
+            : null
+
       setState({
         status: effectiveStatus,
-        price: lastPrice ? formatPrice(lastPrice) : null,
-        rawPrice: lastPrice ? `$${lastPrice}` : null,
-        anchor,
+        price: displayPrice,
+        rawPrice: lastPrice ? `$${lastPrice}` : priceEndNum !== null ? `$${priceEndNum}` : null,
+        timeframe: tf.id,
+        timeframeLabel: tf.label,
+        anchor: effectiveAnchor,
         updated,
         gap,
         oiTime,
@@ -374,6 +495,8 @@ export function useLiveMarketData(): LiveDashboardState {
         events: Array.from(eventsMap.values()).sort((a, b) => b.time - a.time).slice(0, 20),
       })
     }
+
+    publishRef.current = publish
 
     const connect = () => {
       if (stopped) return
@@ -422,8 +545,8 @@ export function useLiveMarketData(): LiveDashboardState {
                 const num = Number(sample.btc)
                 if (Number.isFinite(num)) {
                   if (oiInitial === null) oiInitial = num
-                  oiHistory.push(num)
-                  if (oiHistory.length > 24) oiHistory.shift()
+                  oiHistory.push({ time: sample.time, btc: num })
+                  if (oiHistory.length > 120) oiHistory.shift()
                 }
                 receivedNewOi = true
               }
@@ -449,8 +572,8 @@ export function useLiveMarketData(): LiveDashboardState {
                       color: item.side === 'long' ? 'rose' : 'teal',
                       description:
                         item.side === 'long'
-                          ? `High liquidation event! This means over-leveraged buyers (longs) were forced to sell ${item.btc} BTC near $${item.price}, adding sudden downward selling pressure.`
-                          : `High liquidation event! This means over-leveraged sellers (shorts) were forced to buy back ${item.btc} BTC near $${item.price}, adding sudden upward buying fuel.`,
+                          ? `High liquidation event! Over-leveraged buyers (longs) were forced to sell ${item.btc} BTC near $${item.price}, adding sudden downward selling pressure.`
+                          : `High liquidation event! Over-leveraged sellers (shorts) were forced to buy back ${item.btc} BTC near $${item.price}, adding sudden upward buying fuel.`,
                       time: item.time,
                     })
                   }
@@ -469,7 +592,7 @@ export function useLiveMarketData(): LiveDashboardState {
               gap = true
               continue
             }
-            if (t.time >= anchor) {
+            if (t.time >= Math.floor(sessionStart / minute) * minute) {
               trades.push(t)
               if (firstPrice === null) firstPrice = Number(t.price)
               if (t.time >= lastEventTime) {
@@ -482,8 +605,6 @@ export function useLiveMarketData(): LiveDashboardState {
           if (trades.length > 50000) {
             trades = trades.slice(-50000)
             gap = true
-            anchor = Math.floor(trades[0].time / minute) * minute
-            trades = trades.filter(t => t.time >= anchor)
           }
           if (wasEmpty && trades.length > 0) publish()
         } catch {
@@ -521,6 +642,7 @@ export function useLiveMarketData(): LiveDashboardState {
     }, 5000)
     return () => {
       stopped = true
+      publishRef.current = null
       document.removeEventListener('visibilitychange', onVisibilityChange)
       clearInterval(render)
       if (ping) clearInterval(ping)
@@ -528,6 +650,60 @@ export function useLiveMarketData(): LiveDashboardState {
       socket?.close()
     }
   }, [])
+
+  useEffect(() => {
+    const tf = getTimeframeOption(timeframeId)
+    tfRef.current = tf
+    publishRef.current?.()
+    if (timeframeId === '1m') return
+    if (backfillRef.current[timeframeId]) {
+      publishRef.current?.()
+      return
+    }
+    let cancelled = false
+    const controller = new AbortController()
+    const fetchBackfill = async () => {
+      try {
+        const candleReq = fetch(
+          `https://www.okx.com/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=${tf.candleBar}&limit=12`,
+          { signal: controller.signal },
+        ).then(r => (r.ok ? r.json() : null))
+
+        const takerReq = tf.rubikPeriod
+          ? fetch(
+              `https://www.okx.com/api/v5/rubik/stat/taker-volume-contract?instId=BTC-USDT-SWAP&period=${tf.rubikPeriod}&unit=1&limit=12`,
+              { signal: controller.signal },
+            ).then(r => (r.ok ? r.json() : null))
+          : Promise.resolve(null)
+
+        const oiReq = tf.rubikPeriod
+          ? fetch(
+              `https://www.okx.com/api/v5/rubik/stat/contracts/open-interest-volume?ccy=BTC&period=${tf.rubikPeriod}`,
+              { signal: controller.signal },
+            ).then(r => (r.ok ? r.json() : null))
+          : Promise.resolve(null)
+
+        const [candleJson, takerJson, oiJson] = await Promise.all([candleReq, takerReq, oiReq])
+        if (cancelled) return
+
+        const candles = normalizeOkxCandles(candleJson?.data)
+        const takerBuckets = normalizeOkxTakerVolume(takerJson?.data)
+        const oiPoints = normalizeOkxOiHistory(oiJson?.data)
+
+        if (candles.length > 0 || takerBuckets.length > 0 || oiPoints.length > 0) {
+          backfillRef.current[timeframeId] = { candles, takerBuckets, oiPoints }
+          publishRef.current?.()
+        }
+      } catch {
+        // Ignore network/CORS errors in restricted test environments and rely on live WebSocket stream
+      }
+    }
+    void fetchBackfill()
+    return () => {
+      cancelled = true
+      controller.abort()
+    }
+  }, [timeframeId])
 
   return state
 }

@@ -1,5 +1,122 @@
 import type { Trade } from '../domain/tradeEngine'
 
+export type TimeframeId = '1m' | '5m' | '15m' | '30m' | '1h'
+
+export type TimeframeOption = {
+  id: TimeframeId
+  label: string
+  shortLabel: string
+  bucketMs: number
+  candleBar: string
+  rubikPeriod: '5m' | '15m' | '30m' | '1H' | null
+}
+
+export const TIMEFRAME_OPTIONS: readonly TimeframeOption[] = [
+  { id: '1m', label: '1 minute', shortLabel: '1m', bucketMs: 60_000, candleBar: '1m', rubikPeriod: null },
+  { id: '5m', label: '5 minutes', shortLabel: '5m', bucketMs: 300_000, candleBar: '5m', rubikPeriod: '5m' },
+  { id: '15m', label: '15 minutes', shortLabel: '15m', bucketMs: 900_000, candleBar: '15m', rubikPeriod: '15m' },
+  { id: '30m', label: '30 minutes', shortLabel: '30m', bucketMs: 1_800_000, candleBar: '30m', rubikPeriod: '30m' },
+  { id: '1h', label: '1 hour', shortLabel: '1h', bucketMs: 3_600_000, candleBar: '1H', rubikPeriod: '1H' },
+]
+
+export function getTimeframeOption(id: TimeframeId): TimeframeOption {
+  return TIMEFRAME_OPTIONS.find(t => t.id === id) ?? TIMEFRAME_OPTIONS[0]
+}
+
+export type OkxCandlePoint = {
+  time: number
+  open: number
+  high: number
+  low: number
+  close: number
+  volumeBtc: number
+}
+
+export type OkxTakerVolumeBucket = {
+  time: number
+  sellBtc: number
+  buyBtc: number
+  deltaBtc: number
+  volumeBtc: number
+}
+
+export type OkxOiHistoryPoint = {
+  time: number
+  oiUsd: number
+}
+
+/** Normalizes OKX /api/v5/market/candles rows (newest-first from API, returned oldest-first). */
+export function normalizeOkxCandles(rows: unknown): OkxCandlePoint[] {
+  if (!Array.isArray(rows)) return []
+  const out: OkxCandlePoint[] = []
+  for (const row of rows) {
+    if (!Array.isArray(row) || row.length < 7) continue
+    const ts = Number(row[0])
+    const open = Number(row[1])
+    const high = Number(row[2])
+    const low = Number(row[3])
+    const close = Number(row[4])
+    const volCcy = Number(row[6])
+    if (
+      !Number.isSafeInteger(ts) ||
+      !Number.isFinite(open) ||
+      !Number.isFinite(high) ||
+      !Number.isFinite(low) ||
+      !Number.isFinite(close) ||
+      open <= 0 ||
+      close <= 0
+    ) {
+      continue
+    }
+    out.push({
+      time: ts,
+      open,
+      high,
+      low,
+      close,
+      volumeBtc: Number.isFinite(volCcy) && volCcy >= 0 ? volCcy : 0,
+    })
+  }
+  return out.sort((a, b) => a.time - b.time)
+}
+
+/** Normalizes OKX /api/v5/rubik/stat/taker-volume-contract rows (`[ts, sellVol, buyVol]`), returned oldest-first. */
+export function normalizeOkxTakerVolume(rows: unknown): OkxTakerVolumeBucket[] {
+  if (!Array.isArray(rows)) return []
+  const out: OkxTakerVolumeBucket[] = []
+  for (const row of rows) {
+    if (!Array.isArray(row) || row.length < 3) continue
+    const ts = Number(row[0])
+    const sellBtc = Number(row[1])
+    const buyBtc = Number(row[2])
+    if (!Number.isSafeInteger(ts) || !Number.isFinite(sellBtc) || !Number.isFinite(buyBtc) || sellBtc < 0 || buyBtc < 0) {
+      continue
+    }
+    out.push({
+      time: ts,
+      sellBtc,
+      buyBtc,
+      deltaBtc: buyBtc - sellBtc,
+      volumeBtc: buyBtc + sellBtc,
+    })
+  }
+  return out.sort((a, b) => a.time - b.time)
+}
+
+/** Normalizes OKX /api/v5/rubik/stat/contracts/open-interest-volume rows (`[ts, oiUsd, volUsd]`), returned oldest-first. */
+export function normalizeOkxOiHistory(rows: unknown): OkxOiHistoryPoint[] {
+  if (!Array.isArray(rows)) return []
+  const out: OkxOiHistoryPoint[] = []
+  for (const row of rows) {
+    if (!Array.isArray(row) || row.length < 2) continue
+    const ts = Number(row[0])
+    const oiUsd = Number(row[1])
+    if (!Number.isSafeInteger(ts) || !Number.isFinite(oiUsd) || oiUsd <= 0) continue
+    out.push({ time: ts, oiUsd })
+  }
+  return out.sort((a, b) => a.time - b.time)
+}
+
 export type Liquidation = {
   id: string
   time: number

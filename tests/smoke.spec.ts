@@ -22,6 +22,11 @@ test('opens each metric and pulse evidence in the live-first layout', async ({ p
   await expect(page.getByText('ExoCharts Median View')).toBeVisible()
   await expect(page.getByLabel('CVD median volume chart')).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Price, Volume & Open Interest Matrix' })).toBeVisible()
+
+  await page.getByRole('button', { name: '15m' }).click()
+  await expect(page.getByText('15 minutes window', { exact: false })).toBeVisible()
+  await page.getByRole('button', { name: '30m' }).click()
+  await expect(page.getByText('30 minutes window', { exact: false })).toBeVisible()
 })
 
 test('focus mode and live event dismissal work', async ({ page }) => {
