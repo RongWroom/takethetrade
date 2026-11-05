@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { TIMEFRAME_OPTIONS, type TimeframeId } from './data/okx'
 import { OI_CHEAT_SHEET_ROWS, type CvdMedianProfile } from './domain/tradeEngine'
 import { useLiveMarketData } from './features/LiveOverview'
+import { MyTradePanel } from './features/MyTradePanel'
+import { useTradeCheck } from './features/useTradeCheck'
 import type { Metric } from './fixtures/demo'
 
 type Panel = Metric['id'] | 'pulse' | 'events' | 'settings' | null
@@ -66,6 +68,8 @@ function App() {
   const [flippedCards, setFlippedCards] = useState<Record<string, boolean>>({})
   const dialog = useRef<HTMLDialogElement>(null)
   const live = useLiveMarketData(timeframe)
+  const [tradeOpen, setTradeOpen] = useState(false)
+  const trade = useTradeCheck(live.snapshot)
 
   const activeMetric = typeof panel === 'string' ? live.metrics.find(m => m.id === panel) ?? null : null
   const visibleEvents = live.events.filter(ev => !dismissedIds.includes(ev.id))
@@ -105,6 +109,12 @@ function App() {
             Events <span className="nav-count">{visibleEvents.length}</span>
           </button>
           <button onClick={() => setPanel('settings')}>Settings</button>
+          <button className="nav-trade" onClick={() => setTradeOpen(true)} aria-haspopup="dialog">
+            My Trade
+            {trade.draft.side && (
+              <span className={`nav-trade-side ${trade.draft.side}`}>{trade.draft.side === 'long' ? '▲ Long' : '▼ Short'}</span>
+            )}
+          </button>
         </nav>
         <div className="topbar-right">
           <div className="timeframe-picker" role="group" aria-label="Select timeframe">
@@ -508,6 +518,15 @@ function App() {
           )}
         </div>
       </dialog>
+      <MyTradePanel
+        open={tradeOpen}
+        onClose={() => setTradeOpen(false)}
+        draft={trade.draft}
+        setDraft={trade.setDraft}
+        result={trade.result}
+        livePrice={live.snapshot.price}
+        timeframeLabel={live.timeframeLabel}
+      />
     </div>
   )
 }

@@ -188,3 +188,33 @@ export function normalizeOkxLiquidationOrders(row: unknown): Liquidation[] {
   return out
 }
 
+export type FundingRateSample = { rate: number; fundingTime: number; time: number }
+
+/** Normalizes an OKX public `funding-rate` WebSocket entry (or REST /public/funding-rate row) for BTC-USDT-SWAP. */
+export function normalizeOkxFundingRate(row: unknown): FundingRateSample | null {
+  if (!row || typeof row !== 'object') return null
+  const r = row as Record<string, unknown>
+  if (r.instId !== 'BTC-USDT-SWAP' || typeof r.fundingRate !== 'string' || typeof r.ts !== 'string') return null
+  const rate = Number(r.fundingRate)
+  const time = Number(r.ts)
+  const fundingTime = Number(r.fundingTime)
+  if (r.fundingRate === '' || !Number.isFinite(rate) || Math.abs(rate) > 0.05 || !Number.isSafeInteger(time)) return null
+  return { rate, fundingTime: Number.isSafeInteger(fundingTime) ? fundingTime : 0, time }
+}
+
+export type LongShortRatioPoint = { time: number; ratio: number }
+
+/** Normalizes OKX /api/v5/rubik/stat/contracts/long-short-account-ratio-contract rows (`[ts, ratio]`), returned oldest-first. */
+export function normalizeOkxLongShortRatio(rows: unknown): LongShortRatioPoint[] {
+  if (!Array.isArray(rows)) return []
+  const out: LongShortRatioPoint[] = []
+  for (const row of rows) {
+    if (!Array.isArray(row) || row.length < 2) continue
+    const time = Number(row[0])
+    const ratio = Number(row[1])
+    if (!Number.isSafeInteger(time) || !Number.isFinite(ratio) || ratio <= 0) continue
+    out.push({ time, ratio })
+  }
+  return out.sort((a, b) => a.time - b.time)
+}
+

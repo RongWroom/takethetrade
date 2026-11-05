@@ -117,3 +117,37 @@ test('centers modal on desktop and positions as bottom sheet on mobile', async (
   expect(box!.y).toBeGreaterThan(50)
 })
 
+test('My Trade drawer evaluates a long with entry, stop and leverage', async ({ page }) => {
+  await page.routeWebSocket('wss://ws.okx.com/ws/v5/public', ws => {
+    ws.onMessage(() => {
+      ws.send(JSON.stringify({ event: 'subscribe' }))
+      ws.send(JSON.stringify({ arg: { channel: 'trades' }, data: [{ instId: 'BTC-USDT-SWAP', tradeId: 't1', side: 'buy', sz: '100', ts: String(Date.now()), px: '80000' }] }))
+      ws.send(JSON.stringify({ arg: { channel: 'funding-rate' }, data: [{ instId: 'BTC-USDT-SWAP', fundingRate: '0.0005', fundingTime: String(Date.now() + 3600000), ts: String(Date.now()) }] }))
+    })
+  })
+  await page.goto('/')
+  await expect(page.getByText('$80,000.00')).toBeVisible({ timeout: 10000 })
+  await page.getByRole('button', { name: 'My Trade' }).click()
+  const drawer = page.getByRole('dialog', { name: 'My Trade' })
+  await expect(drawer.getByText('This app cannot place trades')).toBeVisible()
+  await expect(drawer.getByText('Thinking about a trade?')).toBeVisible()
+
+  await drawer.getByRole('button', { name: /Long/ }).click()
+  await expect(drawer.getByText('If you entered now')).toBeVisible()
+  await expect(drawer.getByText(/Crowded trade/)).toBeVisible({ timeout: 10000 })
+
+  await drawer.getByRole('button', { name: /Add entry/ }).click()
+  await drawer.getByLabel(/Entry price/).fill('80,000')
+  await drawer.getByLabel(/^Stop/).fill('81000')
+  await expect(drawer.getByText('For a long, the stop should be below the entry price.')).toBeVisible()
+  await drawer.getByLabel(/^Stop/).fill('79900')
+  await drawer.getByLabel(/^Leverage/).fill('100')
+  await expect(drawer.getByText('Your open trade')).toBeVisible()
+  await expect(drawer.getByText(/force-closed around/)).toBeVisible()
+
+  await page.keyboard.press('Escape')
+  await expect(drawer).not.toBeVisible()
+  await expect(page.getByRole('button', { name: /My Trade/ })).toContainText('Long')
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+})
+

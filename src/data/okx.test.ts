@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest'
 import {
   getTimeframeOption,
   normalizeOkxCandles,
+  normalizeOkxFundingRate,
   normalizeOkxLiquidationOrders,
+  normalizeOkxLongShortRatio,
   normalizeOkxOiHistory,
   normalizeOkxOpenInterest,
   normalizeOkxTakerVolume,
@@ -87,3 +89,23 @@ describe('OKX timeframe options and REST normalizers', () => {
   })
 })
 
+describe('funding rate and long/short ratio', () => {
+  it('normalizes a live funding-rate entry and rejects other instruments or blanks', () => {
+    const row = { instId: 'BTC-USDT-SWAP', fundingRate: '0.0001000000000000', fundingTime: '1793894400000', ts: '1793894111677' }
+    expect(normalizeOkxFundingRate(row)).toEqual({ rate: 0.0001, fundingTime: 1793894400000, time: 1793894111677 })
+    expect(normalizeOkxFundingRate({ ...row, instId: 'ETH-USDT-SWAP' })).toBeNull()
+    expect(normalizeOkxFundingRate({ ...row, fundingRate: '' })).toBeNull()
+    expect(normalizeOkxFundingRate(null)).toBeNull()
+  })
+
+  it('normalizes long/short ratio rows oldest-first', () => {
+    const pts = normalizeOkxLongShortRatio([
+      ['1793894100000', '2.2075541293202021'],
+      ['1793893800000', '2.2086702854399764'],
+      ['bad', '1'],
+      ['1793893500000', '-1'],
+    ])
+    expect(pts.map(p => p.time)).toEqual([1793893800000, 1793894100000])
+    expect(pts[1].ratio).toBeCloseTo(2.2076)
+  })
+})

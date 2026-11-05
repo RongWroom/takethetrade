@@ -1,6 +1,6 @@
 # Take The Trade
 
-A read-only Bitcoin perpetual-futures order-flow dashboard. The overview connects directly to the public OKX `BTC-USDT-SWAP` WebSocket stream (`trades`, `open-interest`, and `liquidation-orders`) and displays live price in the header, four interactive order-flow cards (Volume Delta, Cumulative Volume Delta, Open Interest, and Liquidations), a deterministic Market Pulse summary, and a quiet Market Events inbox. No trading functionality is implemented. Live coverage begins when the page opens, has no historical backfill, and can miss events during disconnects or browser sleep.
+A read-only Bitcoin perpetual-futures order-flow dashboard. The overview connects directly to the public OKX `BTC-USDT-SWAP` WebSocket stream (`trades`, `open-interest`, `liquidation-orders`, and `funding-rate`) and displays live price in the header, four interactive order-flow cards (Volume Delta, Cumulative Volume Delta, Open Interest, and Liquidations), a deterministic Market Pulse summary, a read-only **My Trade** slide-out drawer for evaluating a planned or held trade against live market context, and a quiet Market Events inbox. No trading functionality is implemented. Live coverage begins when the page opens, has no historical backfill on the 1m stream, and can miss events during disconnects or browser sleep.
 
 ## Development
 

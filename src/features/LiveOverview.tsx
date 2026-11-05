@@ -2,7 +2,9 @@ import { useEffect, useRef, useState } from 'react'
 import {
   getTimeframeOption,
   normalizeOkxCandles,
+  normalizeOkxFundingRate,
   normalizeOkxLiquidationOrders,
+  normalizeOkxLongShortRatio,
   normalizeOkxOiHistory,
   normalizeOkxOpenInterest,
   normalizeOkxTakerVolume,
@@ -24,6 +26,7 @@ import {
   type PulseEvaluation,
   type Trade,
 } from '../domain/tradeEngine'
+import { calcAtrPct, calcVwap, type MarketSnapshot } from '../domain/tradeCheck'
 import type { Metric } from '../fixtures/demo'
 
 const minute = 60_000
@@ -82,6 +85,64 @@ export type LiveDashboardState = {
   pulse: PulseEvaluation
   oiRegime: OiRegimeEvaluation
   events: MarketEventItem[]
+  snapshot: MarketSnapshot
+}
+
+/** Slower-moving context for the My Trade check, refreshed every few minutes over public REST. */
+type TradeContext = {
+  vwap: number | null
+  atrPct: number | null
+  trendPct: number | null
+  lsRatio: number | null
+  lsRatioAvg: number | null
+}
+
+const emptyContext: TradeContext = { vwap: null, atrPct: null, trendPct: null, lsRatio: null, lsRatioAvg: null }
+
+const emptySnapshot = (timeframeLabel: string): MarketSnapshot => ({
+  price: null,
+  priceStart: null,
+  deltaBtc: null,
+  cvdBtc: null,
+  volumeBtc: null,
+  oiRegimeId: null,
+  vwap: null,
+  atrPct: null,
+  fundingRate: null,
+  lsRatio: null,
+  lsRatioAvg: null,
+  trendPct: null,
+  recentLongLiqUsd: 0,
+  recentShortLiqUsd: 0,
+  timeframeLabel,
+})
+
+async function fetchTradeContext(signal: AbortSignal): Promise<{ context: TradeContext; fundingRate: number | null }> {
+  const get = (url: string) =>
+    fetch(url, { signal })
+      .then(r => (r.ok ? r.json() : null))
+      .catch(() => null)
+  const [m15, h1, ls, funding] = await Promise.all([
+    get('https://www.okx.com/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=15m&limit=24'),
+    get('https://www.okx.com/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=1H&limit=7'),
+    get('https://www.okx.com/api/v5/rubik/stat/contracts/long-short-account-ratio-contract?instId=BTC-USDT-SWAP&period=5m&limit=13'),
+    get('https://www.okx.com/api/v5/public/funding-rate?instId=BTC-USDT-SWAP'),
+  ])
+  const c15 = normalizeOkxCandles(m15?.data)
+  const c1h = normalizeOkxCandles(h1?.data)
+  const lsPts = normalizeOkxLongShortRatio(ls?.data)
+  const prior = lsPts.slice(0, -1)
+  const fundingSample = Array.isArray(funding?.data) ? normalizeOkxFundingRate(funding.data[0]) : null
+  return {
+    context: {
+      vwap: calcVwap(c15),
+      atrPct: calcAtrPct(c15),
+      trendPct: c1h.length >= 2 ? ((c1h[c1h.length - 1].close - c1h[0].close) / c1h[0].close) * 100 : null,
+      lsRatio: lsPts.length > 0 ? lsPts[lsPts.length - 1].ratio : null,
+      lsRatioAvg: prior.length > 0 ? prior.reduce((sum, p) => sum + p.ratio, 0) / prior.length : null,
+    },
+    fundingRate: fundingSample?.rate ?? null,
+  }
 }
 
 function buildMetrics(params: {
@@ -284,6 +345,7 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m'): LiveDashboar
         oiEndBtc: null,
       }),
       events: [],
+      snapshot: emptySnapshot(tfOption.label),
     }
   })
 
@@ -309,6 +371,10 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m'): LiveDashboar
     const seenLiqIds = new Set<string>()
     let liquidations: Liquidation[] = []
     const eventsMap = new Map<string, MarketEventItem>()
+    let context: TradeContext = emptyContext
+    let fundingRate: number | null = null
+    let fundingTime: number | null = null
+    const contextController = new AbortController()
 
     const publish = () => {
       const now = Date.now()
@@ -471,6 +537,25 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m'): LiveDashboar
         oiEndBtc: oiEndNum,
       })
 
+      const recentLiqs = liquidations.filter(l => l.time >= now - 15 * minute)
+      const snapshot: MarketSnapshot = {
+        price: priceEndNum,
+        priceStart: tfPriceStart,
+        deltaBtc: delta !== null ? Number(delta) / 1e8 : null,
+        cvdBtc: cvd !== null ? Number(cvd) / 1e8 : null,
+        volumeBtc: volumeSeries.length > 0 ? volumeSeries[volumeSeries.length - 1] : null,
+        oiRegimeId: oiRegime.activeRowId,
+        vwap: context.vwap,
+        atrPct: context.atrPct,
+        fundingRate,
+        lsRatio: context.lsRatio,
+        lsRatioAvg: context.lsRatioAvg,
+        trendPct: context.trendPct,
+        recentLongLiqUsd: recentLiqs.filter(l => l.side === 'long').reduce((sum, l) => sum + l.notionalUsd, 0),
+        recentShortLiqUsd: recentLiqs.filter(l => l.side === 'short').reduce((sum, l) => sum + l.notionalUsd, 0),
+        timeframeLabel: tf.label,
+      }
+
       const displayPrice =
         lastPrice !== null
           ? formatPrice(lastPrice)
@@ -493,6 +578,7 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m'): LiveDashboar
         pulse,
         oiRegime,
         events: Array.from(eventsMap.values()).sort((a, b) => b.time - a.time).slice(0, 20),
+        snapshot,
       })
     }
 
@@ -513,6 +599,7 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m'): LiveDashboar
               { channel: 'trades', instId: 'BTC-USDT-SWAP' },
               { channel: 'open-interest', instId: 'BTC-USDT-SWAP' },
               { channel: 'liquidation-orders', instType: 'SWAP' },
+              { channel: 'funding-rate', instId: 'BTC-USDT-SWAP' },
             ],
           }),
         )
@@ -552,6 +639,16 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m'): LiveDashboar
               }
             }
             if (receivedNewOi && oiHistory.length === 1) publish()
+            return
+          }
+          if (msg.arg?.channel === 'funding-rate') {
+            for (const row of msg.data) {
+              const sample = normalizeOkxFundingRate(row)
+              if (sample && (fundingTime === null || sample.time >= fundingTime)) {
+                fundingRate = sample.rate
+                fundingTime = sample.time
+              }
+            }
             return
           }
           if (msg.arg?.channel === 'liquidation-orders') {
@@ -631,6 +728,15 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m'): LiveDashboar
       }
     }
     document.addEventListener('visibilitychange', onVisibilityChange)
+    const refreshContext = async () => {
+      const result = await fetchTradeContext(contextController.signal)
+      if (stopped) return
+      context = result.context
+      if (fundingRate === null && result.fundingRate !== null) fundingRate = result.fundingRate
+      publish()
+    }
+    void refreshContext()
+    const contextTimer = setInterval(() => void refreshContext(), 5 * minute)
     connect()
     const render = setInterval(publish, 5000)
     ping = setInterval(() => {
@@ -645,6 +751,8 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m'): LiveDashboar
       publishRef.current = null
       document.removeEventListener('visibilitychange', onVisibilityChange)
       clearInterval(render)
+      clearInterval(contextTimer)
+      contextController.abort()
       if (ping) clearInterval(ping)
       if (timer) clearTimeout(timer)
       socket?.close()

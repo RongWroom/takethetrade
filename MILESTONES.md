@@ -7,5 +7,5 @@
 - M4 — Live overview: OKX trade stream, header price, minute delta and session CVD unified directly into the primary visual design (demo mode toggle removed). Controlled browser checks pass, including disconnect and resubscription while retaining the coverage warning.
 - M5 — Open interest and liquidation cards: live OKX open-interest quantity, session percentage change, staleness labels, `liquidation-orders` normalization, and live event inbox implemented in the primary card layout.
 - M6 — Market Pulse: deterministic rule evaluation (`evaluateMarketPulse`) with `"Insufficient data"` baseline fallback and live evidence drawer integrated into the Market Pulse card.
-- M7 — Deep Dive and preferences: not started.
+- M7 — Deep Dive, preferences, and My Trade check: read-only **My Trade** slide-out drawer (`src/features/MyTradePanel.tsx` and `src/domain/tradeCheck.ts`) implemented with Long/Short selection, optional entry/stop/leverage persisted in `localStorage`, funding-rate and long/short ratio normalization, VWAP/ATR/approximate liquidation distance checks, and unit + Playwright smoke tests.
 - M8 — Optional liquidity experiment: not started.

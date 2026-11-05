@@ -28,3 +28,13 @@ The public documentation says trade history covers the last three months with pa
 
 
 On a later retry, the Python diagnostic again received public trade and open-interest messages, plus a liquidation event for another instrument. Cloud Chromium reported `ERR_CERT_AUTHORITY_INVALID` through the configured proxy; the live dashboard consequently showed disconnected. This does not establish whether a normal user browser can connect. TLS verification was retained. The user confirmed personal use and acceptance of the OKX terms.
+
+### Trade context endpoints (My Trade check)
+
+To support the read-only **My Trade** context check, the client also consumes:
+
+- **`funding-rate` WebSocket channel (`instId: BTC-USDT-SWAP`)** and initial fallback `GET /api/v5/public/funding-rate?instId=BTC-USDT-SWAP`: supplies `fundingRate` (decimal string, e.g. `"0.0001"` = 0.01% per 8h settlement), `fundingTime`, and `ts`.
+- **`GET /api/v5/rubik/stat/contracts/long-short-account-ratio-contract?instId=BTC-USDT-SWAP&period=5m&limit=13`**: supplies `[ts, ratio]` rows for the latest long/short account ratio and 1-hour average comparison.
+- **`GET /api/v5/market/candles?instId=BTC-USDT-SWAP&bar=15m&limit=24`** and **`bar=1H&limit=7`**: supplies recent 15m candles (for 6-hour session VWAP and 15m ATR%) and 1h candles (for 6-hour higher-timeframe trend).
+
+All endpoints are unauthenticated public OKX endpoints subject to the same personal-use terms. Network or CORS failures degrade gracefully to `"Waiting for …"` states in the check list without throwing or guessing.
