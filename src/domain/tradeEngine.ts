@@ -1,3 +1,5 @@
+import { LIQUIDATION_LARGE_USD } from './marketRules'
+
 /** Quantities are represented as integer satoshis. No floating-point arithmetic. */
 export type Side = 'buy' | 'sell'
 export type Trade = { exchange: string; symbol: string; id: string; time: number; side: Side; quantityBtc: string }
@@ -93,7 +95,7 @@ export function evaluateMarketPulse(input: PulseInput): PulseEvaluation {
 
   const evidenceSummary = `Price ${pricePct >= 0 ? '+' : ''}${pricePct.toFixed(2)}% · Delta ${deltaSats >= 0n ? '+' : '-'}${Number(deltaSats < 0n ? -deltaSats : deltaSats) / 1e8} BTC · CVD change ${cvdChangeSats >= 0n ? '+' : '-'}${Number(cvdChangeSats < 0n ? -cvdChangeSats : cvdChangeSats) / 1e8} BTC${oiPct !== null ? ` · OI ${oiPct >= 0 ? '+' : ''}${oiPct.toFixed(2)}%` : ' · OI baseline pending'}`
 
-  if (longLiqUsd >= 100_000 && priceDown) {
+  if (longLiqUsd >= LIQUIDATION_LARGE_USD && priceDown) {
     return {
       ruleId: 'long-liquidations-drop',
       observation: 'High liquidation event',
@@ -102,7 +104,7 @@ export function evaluateMarketPulse(input: PulseInput): PulseEvaluation {
       evidence: `${evidenceSummary} · Long liquidations $${Math.round(longLiqUsd).toLocaleString('en-US')}`,
     }
   }
-  if (shortLiqUsd >= 100_000 && priceUp) {
+  if (shortLiqUsd >= LIQUIDATION_LARGE_USD && priceUp) {
     return {
       ruleId: 'short-liquidations-squeeze',
       observation: 'High liquidation event',
@@ -419,4 +421,3 @@ export function scaleSparklineBars(values: readonly number[], count = 12): numbe
   if (max === 0) return padded.map((_, i) => 18 + ((i * 5) % 20))
   return absValues.map(v => Math.round(18 + (v / max) * 76))
 }
-

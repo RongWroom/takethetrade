@@ -1,0 +1,1 @@
+export const LIQUIDATION_LARGE_USD = 100_000

@@ -127,6 +127,23 @@ describe('evaluateTradeCheck', () => {
     expect(find(evaluateTradeCheck({ side: 'short' }, s).checks, 'absorption').status).toBe('good')
   })
 
+  it('keeps closed-window flow checks stable while the live risk price changes', () => {
+    const closed = snap({ flowPrice: 80_200, priceStart: 80_000, cvdBtc: -20, deltaBtc: 40, volumeBtc: 100 })
+    for (const price of [79_000, 80_005, 81_000]) {
+      const checks = evaluateTradeCheck({ side: 'long' }, { ...closed, price }).checks
+      expect(find(checks, 'divergence').status).toBe('against')
+      expect(find(checks, 'absorption').status).toBe('neutral')
+    }
+    const missing = evaluateTradeCheck({ side: 'long' }, { ...closed, flowPrice: null }).checks
+    expect(find(missing, 'divergence').status).toBe('unknown')
+    expect(find(missing, 'absorption').status).toBe('unknown')
+  })
+
+  it('uses the shared large-liquidation boundary rather than the former 25k threshold', () => {
+    expect(find(evaluateTradeCheck({ side: 'long' }, snap({ recentShortLiqUsd: 99_999 })).checks, 'liquidations').status).toBe('neutral')
+    expect(find(evaluateTradeCheck({ side: 'long' }, snap({ recentShortLiqUsd: 100_000 })).checks, 'liquidations').status).toBe('caution')
+  })
+
   it('maps OI regimes to each side', () => {
     const s = snap({ oiRegimeId: 'strong-downtrend' })
     expect(find(evaluateTradeCheck({ side: 'long' }, s).checks, 'regime').status).toBe('against')

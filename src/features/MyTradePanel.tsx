@@ -18,9 +18,10 @@ type Props = {
   result: TradeCheckResult | null
   livePrice: number | null
   timeframeLabel: string
+  confirmationLabel: string
 }
 
-export function MyTradePanel({ open, onClose, draft, setDraft, result, livePrice, timeframeLabel }: Props) {
+export function MyTradePanel({ open, onClose, draft, setDraft, result, livePrice, timeframeLabel, confirmationLabel }: Props) {
   const ref = useRef<HTMLDialogElement>(null)
   const [showDetails, setShowDetails] = useState(() => Boolean(draft.entry || draft.stop || draft.leverage))
 
@@ -32,6 +33,10 @@ export function MyTradePanel({ open, onClose, draft, setDraft, result, livePrice
   const issueFor = (field: 'entry' | 'stop' | 'leverage') => result?.issues.find(i => i.field === field)?.message
   const update = (patch: Partial<DraftIntent>) => setDraft(prev => ({ ...prev, ...patch }))
   const toggleSide = (side: TradeSide) => update({ side: draft.side === side ? null : side })
+  const resetTrade = () => {
+    setDraft(emptyDraft)
+    setShowDetails(false)
+  }
 
   const field = (key: 'entry' | 'stop' | 'leverage', label: string, hint: string, placeholder: string) => {
     const issue = issueFor(key)
@@ -96,6 +101,12 @@ export function MyTradePanel({ open, onClose, draft, setDraft, result, livePrice
           <span aria-hidden="true">🔒</span> Read-only. This app cannot place trades. What you enter stays in this browser.
         </p>
 
+        <div className="mt-actions">
+          <button type="button" className="secondary" onClick={resetTrade}>
+            Reset My Trade
+          </button>
+        </div>
+
         <div className="mt-side" role="group" aria-label="Trade direction">
           <button type="button" className={`mt-side-btn long ${draft.side === 'long' ? 'active' : ''}`} aria-pressed={draft.side === 'long'} onClick={() => toggleSide('long')}>
             ▲ Long
@@ -131,6 +142,9 @@ export function MyTradePanel({ open, onClose, draft, setDraft, result, livePrice
                   <span className="mt-mode">{result.mode === 'position' ? 'Your open trade' : 'If you entered now'}</span>
                   <strong>{result.summary.headline}</strong>
                 </div>
+                <p className="mt-confirmation">
+                  Regime: {confirmationLabel}. Trend and flow use completed confirmation windows; price/risk, liquidation and funding checks remain live.
+                </p>
                 <ul className="mt-checks">
                   {result.checks.map(c => {
                     const meta = STATUS_META[c.status]
@@ -158,9 +172,6 @@ export function MyTradePanel({ open, onClose, draft, setDraft, result, livePrice
                 <p className="mt-footnote">
                   Context, not advice. Checks are rule-based reads of OKX public data and can be wrong or incomplete. Liquidation prices are approximate.
                 </p>
-                <button type="button" className="secondary" onClick={() => setDraft(emptyDraft)}>
-                  Clear trade
-                </button>
               </>
             )}
           </>

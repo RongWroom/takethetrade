@@ -18,7 +18,6 @@ import {
 } from '../data/okx'
 import {
   calculateCvdMedianProfile,
-  evaluateMarketPulse,
   evaluateOiRegime,
   replayTrades,
   scaleSparklineBars,
@@ -27,6 +26,12 @@ import {
   type Trade,
 } from '../domain/tradeEngine'
 import { calcAtrPct, calcVwap, type MarketSnapshot } from '../domain/tradeCheck'
+import {
+  LIQUIDATION_LARGE_USD,
+  SignalConfirmation,
+  type ConfirmationMode,
+  type ConfirmationView,
+} from '../domain/signalConfirmation'
 import type { Metric } from '../fixtures/demo'
 
 const minute = 60_000
@@ -62,6 +67,7 @@ const formatPrice = (px: string) => {
 
 export type MarketEventItem = {
   id: string
+  kind: 'liquidation' | 'flow'
   tag: string
   title: string
   value: string
@@ -86,7 +92,16 @@ export type LiveDashboardState = {
   oiRegime: OiRegimeEvaluation
   events: MarketEventItem[]
   snapshot: MarketSnapshot
+  confirmation: ConfirmationView
 }
+
+const emptyOiRegime = evaluateOiRegime({
+  priceStart: null,
+  priceEnd: null,
+  volumeSeriesBtc: [],
+  oiStartBtc: null,
+  oiEndBtc: null,
+})
 
 /** Slower-moving context for the My Trade check, refreshed every few minutes over public REST. */
 type TradeContext = {
@@ -221,18 +236,18 @@ function buildMetrics(params: {
   const longLiqUsd = liquidations.filter(l => l.side === 'long').reduce((sum, l) => sum + l.notionalUsd, 0)
   const shortLiqUsd = totalLiqUsd - longLiqUsd
   const longShare = totalLiqUsd > 0 ? Math.round((longLiqUsd / totalLiqUsd) * 100) : 0
-  const isHighLiq = totalLiqUsd >= 25_000
+  const isHighLiq = totalLiqUsd >= LIQUIDATION_LARGE_USD
   const liqDesc = totalLiqUsd === 0
-    ? `No forced liquidations in ${timeframe.shortLabel} window`
+    ? `No reported liquidations in ${timeframe.shortLabel} window`
     : longLiqUsd >= shortLiqUsd
-      ? `${isHighLiq ? 'High liquidation event! ' : ''}${longShare}% longs forced out (${timeframe.shortLabel})`
-      : `${isHighLiq ? 'High liquidation event! ' : ''}${100 - longShare}% shorts squeezed (${timeframe.shortLabel})`
+      ? `${isHighLiq ? 'Large reported liquidation! ' : ''}${longShare}% longs forced out (${timeframe.shortLabel})`
+      : `${isHighLiq ? 'Large reported liquidation! ' : ''}${100 - longShare}% shorts squeezed (${timeframe.shortLabel})`
 
   const liqPlain = totalLiqUsd === 0
-    ? `No liquidations reported in ${tfText}. Nobody has been forced out of their leveraged trades.`
+    ? 'No liquidations reported in this window. This feed does not capture every liquidation.'
     : longLiqUsd >= shortLiqUsd
-      ? `${isHighLiq ? 'High liquidation event! ' : ''}Over-leveraged buyers (longs) lost their margin as price dropped and were forced to sell (${formatUsdCompact(longLiqUsd)} longs vs ${formatUsdCompact(shortLiqUsd)} shorts).`
-      : `${isHighLiq ? 'High liquidation event! ' : ''}Over-leveraged sellers (shorts) got squeezed as price rose and were forced to buy back (${formatUsdCompact(shortLiqUsd)} shorts vs ${formatUsdCompact(longLiqUsd)} longs).`
+      ? `${isHighLiq ? 'Large reported liquidation! ' : ''}Over-leveraged buyers (longs) lost their margin as price dropped and were forced to sell (${formatUsdCompact(longLiqUsd)} longs vs ${formatUsdCompact(shortLiqUsd)} shorts).`
+      : `${isHighLiq ? 'Large reported liquidation! ' : ''}Over-leveraged sellers (shorts) got squeezed as price rose and were forced to buy back (${formatUsdCompact(shortLiqUsd)} shorts vs ${formatUsdCompact(longLiqUsd)} longs).`
 
   return [
     {
@@ -290,15 +305,17 @@ type RestBackfillCache = Partial<
   >
 >
 
-export function useLiveMarketData(timeframeId: TimeframeId = '1m'): LiveDashboardState {
+export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationMode: ConfirmationMode = '5m'): LiveDashboardState {
   const tfOption = getTimeframeOption(timeframeId)
   const tfRef = useRef<TimeframeOption>(tfOption)
 
   const publishRef = useRef<(() => void) | null>(null)
   const backfillRef = useRef<RestBackfillCache>({})
+  const trackerRef = useRef<SignalConfirmation | null>(null)
 
   const [state, setState] = useState<LiveDashboardState>(() => {
     const anchor = Math.floor(Date.now() / tfOption.bucketMs) * tfOption.bucketMs
+    const confirmation = new SignalConfirmation(confirmationMode, Date.now()).view(Date.now(), false)
     return {
       status: 'Connecting',
       price: null,
@@ -327,27 +344,18 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m'): LiveDashboar
         anchor,
         gap: true,
       }),
-      pulse: evaluateMarketPulse({
-        priceStart: null,
-        priceEnd: null,
-        deltaSats: null,
-        cvdChangeSats: null,
-        oiStartBtc: null,
-        oiEndBtc: null,
-        longLiqUsd: 0,
-        shortLiqUsd: 0,
-      }),
-      oiRegime: evaluateOiRegime({
-        priceStart: null,
-        priceEnd: null,
-        volumeSeriesBtc: [],
-        oiStartBtc: null,
-        oiEndBtc: null,
-      }),
+      pulse: confirmation.pulse,
+      oiRegime: confirmation.confirmed ?? emptyOiRegime,
       events: [],
-      snapshot: emptySnapshot(tfOption.label),
+      snapshot: emptySnapshot(`${confirmationMode} confirmation`),
+      confirmation,
     }
   })
+
+  useEffect(() => {
+    trackerRef.current = new SignalConfirmation(confirmationMode, Date.now())
+    publishRef.current?.()
+  }, [confirmationMode])
 
   useEffect(() => {
     let stopped = false
@@ -377,6 +385,8 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m'): LiveDashboar
     const contextController = new AbortController()
 
     const publish = () => {
+      const tracker = trackerRef.current
+      if (!tracker) return
       const now = Date.now()
       const tf = tfRef.current
       const bucketMs = tf.bucketMs
@@ -412,6 +422,7 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m'): LiveDashboar
           status = 'Data error'
           gap = true
           trades = []
+          tracker.interrupt(now)
         }
       }
 
@@ -442,11 +453,7 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m'): LiveDashboar
       const effectiveStatus = status === 'Connected' && updated !== null && now - updated > 15000 ? 'Stale' : status
       const oiStale = status !== 'Connected' || oiTime === null || now - oiTime > 15000
 
-      const windowStart = now - Math.max(bucketMs, minute)
-      const windowLiquidations = tf.id === '1m' ? liquidations : liquidations.filter(l => l.time >= windowStart)
-      const activeLiquidations = windowLiquidations.length > 0 ? windowLiquidations : liquidations
-      const longLiqUsd = activeLiquidations.filter(l => l.side === 'long').reduce((s, l) => s + l.notionalUsd, 0)
-      const shortLiqUsd = activeLiquidations.filter(l => l.side === 'short').reduce((s, l) => s + l.notionalUsd, 0)
+      const activeLiquidations = liquidations.filter(l => l.time >= now - bucketMs && l.time <= now)
       const liqSeries = activeLiquidations.slice(-12).map(l => l.notionalUsd)
 
       if (delta !== null) {
@@ -455,6 +462,7 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m'): LiveDashboar
           const bucketKey = `delta-${tf.id}-${Math.floor(now / bucketMs)}`
           eventsMap.set(bucketKey, {
             id: bucketKey,
+            kind: 'flow',
             tag: `LIVE ORDER FLOW (${tf.shortLabel.toUpperCase()})`,
             title: delta > 0n ? 'Elevated taker buying delta' : 'Elevated taker selling delta',
             value: formatSignedBtc(delta),
@@ -468,14 +476,6 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m'): LiveDashboar
         }
       }
 
-      const windowTrades = trades.filter(t => t.time >= now - bucketMs)
-      let tfPriceStart: number | null = firstPrice
-      if (windowTrades.length > 0) {
-        tfPriceStart = Number(windowTrades[0].price)
-      }
-      if (cached && cached.candles.length >= 2 && windowTrades.length <= 1) {
-        tfPriceStart = cached.candles[cached.candles.length - 2].open
-      }
       const priceEndNum =
         lastPrice !== null
           ? Number(lastPrice)
@@ -518,33 +518,18 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m'): LiveDashboar
         gap,
       })
 
-      const pulse = evaluateMarketPulse({
-        priceStart: tfPriceStart,
-        priceEnd: priceEndNum,
-        deltaSats: delta,
-        cvdChangeSats: cvd,
-        oiStartBtc: tfOiInitial,
-        oiEndBtc: oiEndNum,
-        longLiqUsd,
-        shortLiqUsd,
-      })
+      const confirmation = tracker.view(now, effectiveStatus === 'Connected' && !oiStale && document.visibilityState !== 'hidden')
+      const oiRegime = confirmation.confirmed ?? emptyOiRegime
 
-      const oiRegime = evaluateOiRegime({
-        priceStart: tfPriceStart,
-        priceEnd: priceEndNum,
-        volumeSeriesBtc: volumeSeries,
-        oiStartBtc: tfOiInitial,
-        oiEndBtc: oiEndNum,
-      })
-
-      const recentLiqs = liquidations.filter(l => l.time >= now - 15 * minute)
+      const recentLiqs = liquidations.filter(l => l.time >= now - 15 * minute && l.time <= now)
       const snapshot: MarketSnapshot = {
         price: priceEndNum,
-        priceStart: tfPriceStart,
-        deltaBtc: delta !== null ? Number(delta) / 1e8 : null,
-        cvdBtc: cvd !== null ? Number(cvd) / 1e8 : null,
-        volumeBtc: volumeSeries.length > 0 ? volumeSeries[volumeSeries.length - 1] : null,
-        oiRegimeId: oiRegime.activeRowId,
+        flowPrice: confirmation.snapshot.priceEnd,
+        priceStart: confirmation.snapshot.priceStart,
+        deltaBtc: confirmation.snapshot.deltaBtc,
+        cvdBtc: confirmation.snapshot.cvdBtc,
+        volumeBtc: confirmation.snapshot.volumeBtc,
+        oiRegimeId: confirmation.confirmed?.activeRowId ?? null,
         vwap: context.vwap,
         atrPct: context.atrPct,
         fundingRate,
@@ -553,7 +538,7 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m'): LiveDashboar
         trendPct: context.trendPct,
         recentLongLiqUsd: recentLiqs.filter(l => l.side === 'long').reduce((sum, l) => sum + l.notionalUsd, 0),
         recentShortLiqUsd: recentLiqs.filter(l => l.side === 'short').reduce((sum, l) => sum + l.notionalUsd, 0),
-        timeframeLabel: tf.label,
+        timeframeLabel: `${confirmation.mode} confirmation`,
       }
 
       const displayPrice =
@@ -575,10 +560,11 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m'): LiveDashboar
         oiTime,
         oiStale,
         metrics,
-        pulse,
+        pulse: confirmation.pulse,
         oiRegime,
         events: Array.from(eventsMap.values()).sort((a, b) => b.time - a.time).slice(0, 20),
         snapshot,
+        confirmation,
       })
     }
 
@@ -611,6 +597,7 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m'): LiveDashboar
           const msg = JSON.parse(String(e.data))
           if (msg.event === 'error') {
             gap = true
+            trackerRef.current?.interrupt(Date.now())
             status = 'Subscription error'
             socket?.close()
             return
@@ -634,6 +621,7 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m'): LiveDashboar
                   if (oiInitial === null) oiInitial = num
                   oiHistory.push({ time: sample.time, btc: num })
                   if (oiHistory.length > 120) oiHistory.shift()
+                  trackerRef.current?.openInterest({ time: sample.time, btc: num }, Date.now())
                 }
                 receivedNewOi = true
               }
@@ -660,17 +648,18 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m'): LiveDashboar
                   seenLiqIds.add(item.id)
                   liquidations.push(item)
                   added = true
-                  if (item.notionalUsd >= 25_000) {
+                  if (item.notionalUsd >= LIQUIDATION_LARGE_USD) {
                     eventsMap.set(`liq-${item.id}`, {
                       id: `liq-${item.id}`,
-                      tag: 'HIGH LIQUIDATION EVENT',
+                      kind: 'liquidation',
+                      tag: 'LARGE REPORTED LIQUIDATION',
                       title: `Large ${item.side} liquidation`,
                       value: `${formatUsdCompact(item.notionalUsd)} ${item.side}s`,
                       color: item.side === 'long' ? 'rose' : 'teal',
                       description:
                         item.side === 'long'
-                          ? `High liquidation event! Over-leveraged buyers (longs) were forced to sell ${item.btc} BTC near $${item.price}, adding sudden downward selling pressure.`
-                          : `High liquidation event! Over-leveraged sellers (shorts) were forced to buy back ${item.btc} BTC near $${item.price}, adding sudden upward buying fuel.`,
+                          ? `Large reported liquidation! Over-leveraged buyers (longs) were forced to sell ${item.btc} BTC near $${item.price}, adding sudden downward selling pressure.`
+                          : `Large reported liquidation! Over-leveraged sellers (shorts) were forced to buy back ${item.btc} BTC near $${item.price}, adding sudden upward buying fuel.`,
                       time: item.time,
                     })
                   }
@@ -689,6 +678,7 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m'): LiveDashboar
               gap = true
               continue
             }
+            trackerRef.current?.trade({ id: t.id, time: t.time, price: Number(t.price), quantityBtc: t.quantityBtc, side: t.side }, Date.now())
             if (t.time >= Math.floor(sessionStart / minute) * minute) {
               trades.push(t)
               if (firstPrice === null) firstPrice = Number(t.price)
@@ -706,12 +696,14 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m'): LiveDashboar
           if (wasEmpty && trades.length > 0) publish()
         } catch {
           gap = true
+          trackerRef.current?.interrupt(Date.now())
         }
       }
       socket.onerror = () => socket?.close()
       socket.onclose = () => {
         if (stopped) return
         gap = true
+        trackerRef.current?.interrupt(Date.now())
         status = 'Disconnected'
         publish()
         attempts++
@@ -726,6 +718,8 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m'): LiveDashboar
         gap = true
         socket.close()
       }
+      trackerRef.current?.interrupt(Date.now())
+      publish()
     }
     document.addEventListener('visibilitychange', onVisibilityChange)
     const refreshContext = async () => {

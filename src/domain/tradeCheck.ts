@@ -4,6 +4,7 @@
  * it only compares a user-described intent against observed market data.
  */
 import type { OiRegimeId } from './tradeEngine'
+import { LIQUIDATION_LARGE_USD } from './marketRules'
 
 export type TradeSide = 'long' | 'short'
 
@@ -17,6 +18,7 @@ export type TradeIntent = {
 export type CandleLike = { high: number; low: number; close: number; volumeBtc: number }
 
 export type MarketSnapshot = {
+  flowPrice?: number | null
   price: number | null
   /** Price at the start of the selected timeframe window. */
   priceStart: number | null
@@ -174,8 +176,9 @@ function checkFlow(side: TradeSide, s: MarketSnapshot): TradeCheckItem {
 
 function checkDivergence(side: TradeSide, s: MarketSnapshot): TradeCheckItem {
   const title = 'Is the move real?'
-  if (s.price === null || s.priceStart === null || s.cvdBtc === null || s.priceStart <= 0) return unknown('divergence', title, 'price and flow data')
-  const move = ((s.price - s.priceStart) / s.priceStart) * 100
+  const price = s.flowPrice === undefined ? s.price : s.flowPrice
+  if (price === null || s.priceStart === null || s.cvdBtc === null || s.priceStart <= 0) return unknown('divergence', title, 'price and flow data')
+  const move = ((price - s.priceStart) / s.priceStart) * 100
   const evidence = `Price ${pct(move)} · CVD ${btc(s.cvdBtc)} (${s.timeframeLabel})`
   const hollowRise = move > 0.05 && s.cvdBtc < 0
   const hollowDrop = move < -0.05 && s.cvdBtc > 0
@@ -203,9 +206,10 @@ function checkDivergence(side: TradeSide, s: MarketSnapshot): TradeCheckItem {
 
 function checkAbsorption(side: TradeSide, s: MarketSnapshot): TradeCheckItem {
   const title = 'Hidden big orders'
-  if (s.price === null || s.priceStart === null || s.deltaBtc === null || s.volumeBtc === null || s.priceStart <= 0)
+  const price = s.flowPrice === undefined ? s.price : s.flowPrice
+  if (price === null || s.priceStart === null || s.deltaBtc === null || s.volumeBtc === null || s.priceStart <= 0)
     return unknown('absorption', title, 'price and flow data')
-  const move = ((s.price - s.priceStart) / s.priceStart) * 100
+  const move = ((price - s.priceStart) / s.priceStart) * 100
   const imbalance = s.volumeBtc > 0 ? s.deltaBtc / s.volumeBtc : 0
   const evidence = `Price ${pct(move)} · Delta ${btc(s.deltaBtc)} of ${s.volumeBtc.toFixed(2)} BTC volume (${Math.round(imbalance * 100)}% one-sided)`
   const flat = Math.abs(move) <= 0.02
@@ -402,7 +406,7 @@ function checkLiquidations(side: TradeSide, s: MarketSnapshot): TradeCheckItem {
   const title = 'Recent forced closures'
   const total = s.recentLongLiqUsd + s.recentShortLiqUsd
   const evidence = `Last 15m: longs ${usdCompact(s.recentLongLiqUsd)} · shorts ${usdCompact(s.recentShortLiqUsd)} (OKX reported; not all liquidations)`
-  if (total < 25_000)
+  if (total < LIQUIDATION_LARGE_USD)
     return {
       id: 'liquidations',
       status: 'neutral',

@@ -2,7 +2,10 @@ import { useEffect, useRef, useState } from 'react'
 import { TIMEFRAME_OPTIONS, type TimeframeId } from './data/okx'
 import { OI_CHEAT_SHEET_ROWS, type CvdMedianProfile } from './domain/tradeEngine'
 import { useLiveMarketData } from './features/LiveOverview'
+import { LIQUIDATION_LARGE_USD, SIGNAL_RULES } from './domain/signalConfirmation'
+import { describeConfirmation } from './features/confirmationLabels'
 import { MyTradePanel } from './features/MyTradePanel'
+import { useConfirmationPreference } from './features/useConfirmationPreference'
 import { useTradeCheck } from './features/useTradeCheck'
 import type { Metric } from './fixtures/demo'
 
@@ -67,12 +70,18 @@ function App() {
   const [dismissedIds, setDismissedIds] = useState<string[]>([])
   const [flippedCards, setFlippedCards] = useState<Record<string, boolean>>({})
   const dialog = useRef<HTMLDialogElement>(null)
-  const live = useLiveMarketData(timeframe)
+  const { mode: confirmationMode, setMode: setConfirmationMode } = useConfirmationPreference()
+  const live = useLiveMarketData(timeframe, confirmationMode)
   const [tradeOpen, setTradeOpen] = useState(false)
   const trade = useTradeCheck(live.snapshot)
 
   const activeMetric = typeof panel === 'string' ? live.metrics.find(m => m.id === panel) ?? null : null
   const visibleEvents = live.events.filter(ev => !dismissedIds.includes(ev.id))
+  const liquidationEventIds = visibleEvents.filter(ev => ev.kind === 'liquidation').map(ev => ev.id)
+  const dismissLiquidationHistory = () => setDismissedIds(prev => Array.from(new Set([...prev, ...liquidationEventIds])))
+  const confirmationInfo = describeConfirmation(live.confirmation)
+  const regimeBadge = live.confirmation.status === 'confirmed' ? 'CONFIRMED' : 'LAST CONFIRMED'
+  const liquidationDismissNote = `${liquidationEventIds.length} liquidation ${liquidationEventIds.length === 1 ? 'alert' : 'alerts'} shown. Dismisses liquidation alerts from the inbox only. Live liquidation totals and calculations are unchanged; new alerts will still appear.`
 
   const toggleFlip = (id: string) => {
     setFlippedCards(prev => ({ ...prev, [id]: !prev[id] }))
@@ -273,12 +282,13 @@ function App() {
           <button className="pulse" onClick={() => setPanel('pulse')}>
             <span className="pulse-head">
               <span>
-                <span className="pulse-icon">•</span> Market Pulse ({timeframe})
+                <span className="pulse-icon">•</span> Market Pulse ({confirmationMode} confirmation)
               </span>
               <span className="observation">{live.pulse.observation}</span>
             </span>
             <strong>{live.pulse.headline}</strong>
             <span className="pulse-copy">{live.pulse.copy}</span>
+            <span className="oi-mini-note">{confirmationInfo.status} · {confirmationInfo.progress}</span>
             <span className="pulse-link">
               Explore the evidence <span>→</span>
             </span>
@@ -288,7 +298,7 @@ function App() {
             <section className="oi-matrix-section" aria-label="Open Interest Cheat Sheet Calculator">
               <div className="oi-matrix-header">
                 <div>
-                  <p className="eyebrow">OPEN INTEREST CALCULATOR · {timeframe.toUpperCase()}</p>
+                  <p className="eyebrow">OPEN INTEREST CALCULATOR · {confirmationMode.toUpperCase()} CONFIRMATION</p>
                   <h2>Price, Volume &amp; Open Interest Matrix</h2>
                 </div>
                 <div className="oi-live-verdict">
@@ -297,10 +307,11 @@ function App() {
                       {live.oiRegime.activeRow.marketTitle} · {live.oiRegime.activeRow.sentiment}
                     </span>
                   ) : (
-                    <span className="verdict-pill neutral">Waiting for movement</span>
+                    <span className="verdict-pill neutral">{confirmationInfo.status}</span>
                   )}
                 </div>
               </div>
+              <p className="oi-mini-note">{confirmationInfo.progress}</p>
 
               <div className="oi-live-strip">
                 <div className="oi-signal-pill">
@@ -333,7 +344,7 @@ function App() {
 
               {live.oiRegime.activeRow && !showFullMatrix && (
                 <div className="oi-active-summary">
-                  <span className="live-match-badge">LIVE NOW</span>
+                  <span className="live-match-badge">{regimeBadge}</span>
                   <p>{live.oiRegime.activeRow.plainEnglish}</p>
                 </div>
               )}
@@ -375,7 +386,7 @@ function App() {
                           <span className="sig-market">
                             <strong>{row.marketTitle}</strong> -{' '}
                             <em className={row.sentiment.toLowerCase()}>{row.sentiment}</em>
-                            {isActive && <span className="live-match-badge">LIVE NOW</span>}
+                            {isActive && <span className="live-match-badge">{regimeBadge}</span>}
                           </span>
                         </div>
                         <p className="oi-row-desc">{row.plainEnglish}</p>
@@ -448,6 +459,15 @@ function App() {
                 </div>
               )}
               <p>{activeMetric.detail}</p>
+              {activeMetric.id === 'liquidations' && liquidationEventIds.length > 0 && (
+                <div className="detail-box">
+                  <strong>Liquidation alerts</strong>
+                  <p>{liquidationDismissNote}</p>
+                  <button className="secondary" onClick={dismissLiquidationHistory}>
+                    Dismiss liquidation history
+                  </button>
+                </div>
+              )}
               <div className="detail-box">
                 <strong>Source &amp; session coverage</strong>
                 <p>
@@ -469,10 +489,19 @@ function App() {
                 <strong>Observed evidence ({live.pulse.ruleId})</strong>
                 <p>{live.pulse.evidence}</p>
                 <p>
-                  Deterministic rule evaluation from live OKX {live.timeframeLabel} inputs. Interpretive context only; no probabilities or trading advice are generated.
+                  Deterministic rule evaluation over closed {confirmationMode} confirmation windows of live OKX data ({confirmationInfo.status}). Interpretive context only; no probabilities or trading advice are generated.
                 </p>
               </div>
             </>
+          )}
+          {panel === 'events' && liquidationEventIds.length > 0 && (
+            <div className="detail-box">
+              <strong>Liquidation alerts</strong>
+              <p>{liquidationDismissNote}</p>
+              <button className="secondary" onClick={dismissLiquidationHistory}>
+                Dismiss liquidation history
+              </button>
+            </div>
           )}
           {panel === 'events' &&
             (visibleEvents.length === 0 ? (
@@ -506,9 +535,39 @@ function App() {
                 </span>
                 <input type="checkbox" checked={focus} onChange={e => setFocus(e.target.checked)} />
               </label>
+              <div className="detail-box" role="radiogroup" aria-label="Signal confirmation">
+                <strong>Signal confirmation</strong>
+                <p>
+                  Pulse and the regime matrix use closed windows of this length, independent of the chart timeframe. Confirmation needs two matching closes.
+                </p>
+                <label className="setting">
+                  <span>
+                    <strong>Balanced</strong>
+                    <small>2 × 5m closes</small>
+                  </span>
+                  <input type="radio" name="confirmation-mode" value="5m" checked={confirmationMode === '5m'} onChange={() => setConfirmationMode('5m')} />
+                </label>
+                <label className="setting">
+                  <span>
+                    <strong>Slow</strong>
+                    <small>2 × 15m closes</small>
+                  </span>
+                  <input type="radio" name="confirmation-mode" value="15m" checked={confirmationMode === '15m'} onChange={() => setConfirmationMode('15m')} />
+                </label>
+                <p>
+                  Changing this restarts confirmation and warms up again. Warm-up: the first complete window after the page opens is never confirmed, and strong labels also need a prior full window for volume.
+                </p>
+                <p>
+                  Uncalibrated defaults: price must move at least the larger of 0.05% or 20% of the previous window&apos;s range; open interest must change at least 0.05%; a strong label also needs volume up at least 10%. Open interest must arrive at least every {SIGNAL_RULES.maximumSampleGapMs / 1000} seconds, and trades must cover the window start and end.
+                </p>
+                <p>
+                  Large reported liquidation alerts start at ${LIQUIDATION_LARGE_USD.toLocaleString('en-US')}, a starting default rather than a calibrated market-wide threshold. Liquidation alerts never change the confirmed regime.
+                </p>
+                <p>Status: {confirmationInfo.status} · {confirmationInfo.progress}</p>
+              </div>
               <div className="detail-box">
                 <strong>Data health &amp; connection</strong>
-                <p>Status: {live.status} · Timeframe: {live.timeframeLabel} · Feed: OKX BTC-USDT-SWAP</p>
+                <p>Status: {live.status} · Timeframe: {live.timeframeLabel} · Confirmation: {confirmationMode} · Feed: OKX BTC-USDT-SWAP</p>
                 <p>
                   Session anchor: {new Date(live.anchor).toISOString()}
                   {live.updated ? ` · Last trade: ${new Date(live.updated).toISOString()}` : ' · Waiting for first trade'}
@@ -526,6 +585,7 @@ function App() {
         result={trade.result}
         livePrice={live.snapshot.price}
         timeframeLabel={live.timeframeLabel}
+        confirmationLabel={`${confirmationInfo.status}, ${confirmationMode} confirmation. ${confirmationInfo.progress}`}
       />
     </div>
   )

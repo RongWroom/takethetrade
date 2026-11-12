@@ -1,0 +1,235 @@
+import { btcToSatoshis, evaluateOiRegime, type OiRegimeEvaluation, type OiRegimeId, type PulseEvaluation } from './tradeEngine'
+
+export type ConfirmationMode = '5m' | '15m'
+export { LIQUIDATION_LARGE_USD } from './marketRules'
+export const SIGNAL_RULES = {
+  confirmations: 2,
+  minimumPricePct: 0.05,
+  priorRangeFraction: 0.2,
+  minimumOiPct: 0.05,
+  minimumVolumeChangePct: 10,
+  maximumSampleGapMs: 15_000,
+} as const
+
+type Snapshot = {
+  priceStart: number | null
+  priceEnd: number | null
+  deltaBtc: number | null
+  cvdBtc: number | null
+  volumeBtc: number | null
+}
+
+export type ConfirmationView = {
+  mode: ConfirmationMode
+  completed: number
+  candidate: OiRegimeId | null
+  confirmed: OiRegimeEvaluation | null
+  pulse: PulseEvaluation
+  status: 'warming' | 'pending' | 'confirmed' | 'mixed' | 'insufficient'
+  lastClosedAt: number | null
+  snapshot: Snapshot
+}
+
+type Observation = { time: number; value: number }
+type Window = {
+  start: number
+  first: Observation | null
+  last: Observation | null
+  high: number
+  low: number
+  oiFirst: Observation | null
+  oiLast: Observation | null
+  volume: bigint
+  delta: bigint
+  invalid: boolean
+  ids: Set<string>
+}
+
+const emptySnapshot = (): Snapshot => ({ priceStart: null, priceEnd: null, deltaBtc: null, cvdBtc: null, volumeBtc: null })
+const quietPulse = (status: ConfirmationView['status']): PulseEvaluation => ({
+  ruleId: status === 'mixed' ? 'confirmed-mixed' : 'insufficient-data',
+  observation: status === 'mixed' ? 'Mixed / sideways' : status === 'insufficient' ? 'Insufficient data' : 'Waiting for confirmation',
+  headline: status === 'mixed' ? 'No confirmed directional trend.' : 'Waiting for two matching completed windows.',
+  copy: status === 'insufficient'
+    ? 'The feed is stale or interrupted. Fresh complete windows are required before confirming a trend.'
+    : 'Live numbers still update immediately. Trend labels require meaningful price and open-interest moves; strong labels also require increasing volume.',
+  evidence: 'Live OKX BTC-USDT-SWAP only. Confirmation starts after the first full aligned window; no historical OI is substituted.',
+})
+
+export class SignalConfirmation {
+  private readonly mode: ConfirmationMode
+  private readonly duration: number
+  private eligibleStart: number
+  private current: Window | null = null
+  private latestOi: Observation | null = null
+  private previous: { volume: number; rangePct: number } | null = null
+  private candidate: OiRegimeId | null = null
+  private completed = 0
+  private misses = 0
+  private confirmed: OiRegimeEvaluation | null = null
+  private snapshot = emptySnapshot()
+  private pulse: PulseEvaluation = quietPulse('warming')
+  private status: ConfirmationView['status'] = 'warming'
+  private lastClosedAt: number | null = null
+
+  constructor(mode: ConfirmationMode, now: number) {
+    this.mode = mode
+    this.duration = mode === '15m' ? 900_000 : 300_000
+    this.eligibleStart = Math.ceil(now / this.duration) * this.duration
+  }
+
+  interrupt(now: number): void {
+    this.eligibleStart = Math.ceil(now / this.duration) * this.duration
+    this.current = null
+    this.latestOi = null
+    this.previous = null
+    this.candidate = null
+    this.completed = 0
+    this.misses = 0
+    this.confirmed = null
+    this.snapshot = emptySnapshot()
+    this.status = 'insufficient'
+    this.pulse = quietPulse(this.status)
+    this.lastClosedAt = null
+  }
+
+  private advance(now: number): void {
+    if (now < this.eligibleStart) return
+    const start = Math.floor(now / this.duration) * this.duration
+    if (this.current && start > this.current.start) {
+      const end = this.current.start + this.duration
+      this.close(this.current, end)
+      if (start > end) {
+        this.interrupt(now)
+        if (now < this.eligibleStart) return
+      }
+      this.current = null
+    }
+    if (!this.current) {
+      const seed = this.latestOi && start - this.latestOi.time <= SIGNAL_RULES.maximumSampleGapMs ? this.latestOi : null
+      this.current = {
+        start, first: null, last: null, high: -Infinity, low: Infinity,
+        oiFirst: seed, oiLast: seed, volume: 0n, delta: 0n, invalid: false, ids: new Set(),
+      }
+    }
+  }
+
+  trade(input: { id: string; time: number; price: number; quantityBtc: string; side: 'buy' | 'sell' }, receivedAt: number): void {
+    this.advance(receivedAt)
+    const w = this.current
+    if (!w || input.time < w.start || input.time >= w.start + this.duration || input.time > receivedAt + 1000) return
+    if (w.ids.has(input.id)) return
+    if (!Number.isFinite(input.price) || input.price <= 0) {
+      w.invalid = true
+      return
+    }
+    let quantity: bigint
+    try {
+      quantity = btcToSatoshis(input.quantityBtc)
+    } catch {
+      w.invalid = true
+      return
+    }
+    w.ids.add(input.id)
+    if (w.ids.size > 100_000) {
+      this.interrupt(receivedAt)
+      return
+    }
+    const point = { time: input.time, value: input.price }
+    if (!w.first || point.time < w.first.time) w.first = point
+    if (!w.last || point.time >= w.last.time) w.last = point
+    w.high = Math.max(w.high, input.price)
+    w.low = Math.min(w.low, input.price)
+    w.volume += quantity
+    w.delta += input.side === 'buy' ? quantity : -quantity
+  }
+
+  openInterest(input: { time: number; btc: number }, receivedAt: number): void {
+    this.advance(receivedAt)
+    if (!Number.isFinite(input.btc) || input.btc <= 0 || input.time > receivedAt + 1000) return
+    if (this.latestOi && input.time <= this.latestOi.time) return
+    const point = { time: input.time, value: input.btc }
+    this.latestOi = point
+    const w = this.current
+    if (!w || point.time < w.start || point.time >= w.start + this.duration) return
+    if (w.oiLast && point.time - w.oiLast.time > SIGNAL_RULES.maximumSampleGapMs) w.invalid = true
+    if (!w.oiFirst) w.oiFirst = point
+    w.oiLast = point
+  }
+
+  private close(w: Window, end: number): void {
+    this.lastClosedAt = end
+    const maxGap = SIGNAL_RULES.maximumSampleGapMs
+    if (w.invalid || !w.first || !w.last || !w.oiFirst || !w.oiLast ||
+      w.first.time - w.start > maxGap || end - w.last.time > maxGap ||
+      Math.abs(w.oiFirst.time - w.start) > maxGap || end - w.oiLast.time > maxGap) {
+      this.confirmed = null
+      this.candidate = null
+      this.completed = 0
+      this.misses = 0
+      this.previous = null
+      this.snapshot = emptySnapshot()
+      this.status = 'insufficient'
+      this.pulse = quietPulse(this.status)
+      return
+    }
+    const volume = Number(w.volume) / 1e8
+    const pricePct = (w.last.value / w.first.value - 1) * 100
+    const oiPct = (w.oiLast.value / w.oiFirst.value - 1) * 100
+    const priceThreshold = Math.max(SIGNAL_RULES.minimumPricePct, (this.previous?.rangePct ?? 0) * SIGNAL_RULES.priorRangeFraction)
+    const volumePct = this.previous && this.previous.volume > 0 ? (volume / this.previous.volume - 1) * 100 : null
+    const evaluation = evaluateOiRegime({
+      priceStart: w.first.value,
+      priceEnd: Math.abs(pricePct) + 1e-10 >= priceThreshold ? w.last.value : w.first.value,
+      oiStartBtc: w.oiFirst.value,
+      oiEndBtc: Math.abs(oiPct) + 1e-10 >= SIGNAL_RULES.minimumOiPct ? w.oiLast.value : w.oiFirst.value,
+      volumeSeriesBtc: volumePct !== null && Math.abs(volumePct) + 1e-10 >= SIGNAL_RULES.minimumVolumeChangePct
+        ? [this.previous!.volume, volume] : [],
+    })
+    if (evaluation.oiDirection === 'increasing' && evaluation.volumeDirection !== 'increasing') {
+      evaluation.activeRowId = null
+      evaluation.activeRow = null
+    }
+    this.previous = { volume, rangePct: ((w.high - w.low) / w.first.value) * 100 }
+    const id = evaluation.activeRowId
+    this.completed = id !== null ? (id === this.candidate ? Math.min(2, this.completed + 1) : 1) : 0
+    this.candidate = id
+    if (id !== null && this.completed === 2) {
+      this.confirmed = evaluation
+      this.misses = 0
+      const deltaBtc = Number(w.delta) / 1e8
+      this.snapshot = { priceStart: w.first.value, priceEnd: w.last.value, deltaBtc, cvdBtc: deltaBtc, volumeBtc: volume }
+      this.status = 'confirmed'
+      this.pulse = {
+        ruleId: `confirmed-${id}`,
+        observation: `Confirmed ${evaluation.activeRow!.marketTitle.toLowerCase()}`,
+        headline: evaluation.activeRow!.marketTitle,
+        copy: `Two consecutive ${this.mode} closes support this price/OI pattern. This is confirmation of observed conditions, not a prediction.`,
+        evidence: `Latest closed window: price ${pricePct.toFixed(3)}% (minimum ${priceThreshold.toFixed(3)}%) · OI ${oiPct.toFixed(3)}% · volume ${volumePct === null ? 'baseline pending' : `${volumePct.toFixed(1)}% vs prior window`} · delta ${deltaBtc.toFixed(4)} BTC · close ${new Date(end).toISOString()}`,
+      }
+    } else {
+      this.misses++
+      if (this.misses >= 2) {
+        this.confirmed = null
+        this.snapshot = emptySnapshot()
+      }
+      this.status = id !== null || this.confirmed ? 'pending' : volumePct === null ? 'warming' : 'mixed'
+      if (!this.confirmed) this.pulse = quietPulse(this.status)
+    }
+  }
+
+  view(now: number, healthy: boolean): ConfirmationView {
+    if (!healthy) this.interrupt(now)
+    else {
+      if (this.status === 'insufficient' && this.lastClosedAt === null) {
+        this.status = 'warming'
+        this.pulse = quietPulse(this.status)
+      }
+      this.advance(now)
+    }
+    return {
+      mode: this.mode, completed: this.completed, candidate: this.candidate, confirmed: this.confirmed,
+      pulse: this.pulse, status: this.status, lastClosedAt: this.lastClosedAt, snapshot: { ...this.snapshot },
+    }
+  }
+}
