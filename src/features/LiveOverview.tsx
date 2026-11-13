@@ -21,10 +21,12 @@ import {
   evaluateOiRegime,
   replayTrades,
   scaleSparklineBars,
+  type Bucket,
   type OiRegimeEvaluation,
   type PulseEvaluation,
   type Trade,
 } from '../domain/tradeEngine'
+import { evaluateMarketStory, type MarketStoryEvaluation, type RawStoryBucketInput } from '../domain/marketStory'
 import { calcAtrPct, calcVwap, type MarketSnapshot } from '../domain/tradeCheck'
 import {
   LIQUIDATION_LARGE_USD,
@@ -94,6 +96,7 @@ export type LiveDashboardState = {
   events: MarketEventItem[]
   snapshot: MarketSnapshot
   confirmation: ConfirmationView
+  story: MarketStoryEvaluation
 }
 
 const emptyOiRegime = evaluateOiRegime({
@@ -306,6 +309,173 @@ type RestBackfillCache = Partial<
   >
 >
 
+function buildInitialStoryBuckets(now: number, bucketMs: number, count = 12): RawStoryBucketInput[] {
+  const currentStart = Math.floor(now / bucketMs) * bucketMs
+  const firstStart = currentStart - (count - 1) * bucketMs
+  return Array.from({ length: count }, (_, i) => {
+    const start = firstStart + i * bucketMs
+    return {
+      start,
+      end: start + bucketMs,
+      priceOpen: null,
+      priceClose: null,
+      deltaBtc: null,
+      cvdBtc: null,
+      volumeBtc: null,
+      oiChangeBtc: null,
+      oiEndBtc: null,
+      longLiqUsd: 0,
+      shortLiqUsd: 0,
+      isDeveloping: i === count - 1,
+    }
+  })
+}
+
+function buildLiveStoryBuckets(params: {
+  now: number
+  bucketMs: number
+  replayedBuckets: readonly Bucket[]
+  trades: readonly (Trade & { price: string })[]
+  oiHistory: readonly { time: number; btc: number }[]
+  liquidations: readonly Liquidation[]
+  cached: RestBackfillCache[TimeframeId]
+  lastPriceNum: number | null
+  count?: number
+}): RawStoryBucketInput[] {
+  const { now, bucketMs, replayedBuckets, trades, oiHistory, liquidations, cached, lastPriceNum, count = 12 } = params
+  const currentBucketStart = Math.floor(now / bucketMs) * bucketMs
+  const firstStart = currentBucketStart - (count - 1) * bucketMs
+
+  const replayMap = new Map<number, Bucket>()
+  for (const b of replayedBuckets) replayMap.set(b.start, b)
+
+  const candleMap = new Map<number, OkxCandlePoint>()
+  if (cached?.candles) {
+    for (const c of cached.candles) candleMap.set(c.time, c)
+  }
+
+  const takerMap = new Map<number, OkxTakerVolumeBucket>()
+  if (cached?.takerBuckets) {
+    for (const tb of cached.takerBuckets) takerMap.set(tb.time, tb)
+  }
+
+  const oiPointMap = new Map<number, OkxOiHistoryPoint>()
+  if (cached?.oiPoints) {
+    for (const op of cached.oiPoints) oiPointMap.set(op.time, op)
+  }
+
+  let runningCvd = 0
+  let hasSeenFlow = false
+  let lastKnownClose: number | null = null
+
+  return Array.from({ length: count }, (_, i) => {
+    const start = firstStart + i * bucketMs
+    const end = start + bucketMs
+    const isDeveloping = i === count - 1
+
+    const bucketTrades = trades.filter(t => t.time >= start && t.time < end)
+    const candle = candleMap.get(start)
+
+    let priceOpen: number | null = null
+    let priceClose: number | null = null
+    let priceHigh: number | null = null
+    let priceLow: number | null = null
+
+    if (bucketTrades.length > 0) {
+      const prices = bucketTrades.map(t => Number(t.price)).filter(p => Number.isFinite(p) && p > 0)
+      if (prices.length > 0) {
+        priceOpen = prices[0]
+        priceClose = prices[prices.length - 1]
+        priceHigh = Math.max(...prices)
+        priceLow = Math.min(...prices)
+      }
+    } else if (candle) {
+      priceOpen = candle.open
+      priceClose = candle.close
+      priceHigh = candle.high
+      priceLow = candle.low
+    } else if (isDeveloping && lastPriceNum !== null) {
+      priceOpen = lastKnownClose ?? lastPriceNum
+      priceClose = lastPriceNum
+    }
+
+    if (priceClose !== null) {
+      lastKnownClose = priceClose
+    }
+
+    const replayBucket = replayMap.get(start)
+    const takerBucket = takerMap.get(start)
+
+    let deltaBtc: number | null = null
+    let volumeBtc: number | null = null
+    let cvdBtc: number | null = null
+
+    if (replayBucket && (bucketTrades.length > 0 || replayBucket.volume > 0n)) {
+      deltaBtc = Number(replayBucket.delta) / 1e8
+      volumeBtc = Number(replayBucket.volume) / 1e8
+      runningCvd += deltaBtc
+      hasSeenFlow = true
+      cvdBtc = runningCvd
+    } else if (takerBucket) {
+      deltaBtc = takerBucket.deltaBtc
+      volumeBtc = takerBucket.volumeBtc
+      runningCvd += deltaBtc
+      hasSeenFlow = true
+      cvdBtc = runningCvd
+    } else if (hasSeenFlow && priceClose !== null && bucketTrades.length === 0 && !isDeveloping) {
+      cvdBtc = runningCvd
+    }
+
+    // Open interest in this bucket
+    let oiChangeBtc: number | null = null
+    let oiEndBtc: number | null = null
+    const bucketOi = oiHistory.filter(o => o.time >= start && o.time <= end)
+    const priorOi = [...oiHistory].reverse().find(o => o.time <= start && start - o.time <= SIGNAL_RULES.maximumOiAgeMs)
+
+    if (bucketOi.length > 0) {
+      const firstOi = priorOi ? priorOi.btc : bucketOi[0].btc
+      const lastOi = bucketOi[bucketOi.length - 1].btc
+      oiEndBtc = lastOi
+      if (priorOi || bucketOi.length >= 2) {
+        oiChangeBtc = lastOi - firstOi
+      } else {
+        oiChangeBtc = 0
+      }
+    } else {
+      const currOiPt = oiPointMap.get(start)
+      const prevOiPt = oiPointMap.get(start - bucketMs)
+      const refPx = priceClose ?? lastPriceNum
+      if (currOiPt && prevOiPt && refPx && refPx > 0) {
+        const currBtc = currOiPt.oiUsd / refPx
+        const prevBtc = prevOiPt.oiUsd / refPx
+        oiEndBtc = currBtc
+        oiChangeBtc = currBtc - prevBtc
+      }
+    }
+
+    const bucketLiqs = liquidations.filter(l => l.time >= start && l.time < end)
+    const longLiqUsd = bucketLiqs.filter(l => l.side === 'long').reduce((s, l) => s + l.notionalUsd, 0)
+    const shortLiqUsd = bucketLiqs.filter(l => l.side === 'short').reduce((s, l) => s + l.notionalUsd, 0)
+
+    return {
+      start,
+      end,
+      priceOpen,
+      priceClose,
+      priceHigh,
+      priceLow,
+      deltaBtc,
+      cvdBtc,
+      volumeBtc,
+      oiChangeBtc,
+      oiEndBtc,
+      longLiqUsd,
+      shortLiqUsd,
+      isDeveloping,
+    }
+  })
+}
+
 export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationMode: ConfirmationMode = '5m'): LiveDashboardState {
   const tfOption = getTimeframeOption(timeframeId)
   const tfRef = useRef<TimeframeOption>(tfOption)
@@ -315,8 +485,14 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
   const trackerRef = useRef<SignalConfirmation | null>(null)
 
   const [state, setState] = useState<LiveDashboardState>(() => {
-    const anchor = Math.floor(Date.now() / tfOption.bucketMs) * tfOption.bucketMs
-    const confirmation = new SignalConfirmation(confirmationMode, Date.now()).view(Date.now(), false, 'Connection: Connecting.')
+    const now = Date.now()
+    const anchor = Math.floor(now / tfOption.bucketMs) * tfOption.bucketMs
+    const confirmation = new SignalConfirmation(confirmationMode, now).view(now, false, 'Connection: Connecting.')
+    const story = evaluateMarketStory({
+      buckets: buildInitialStoryBuckets(now, tfOption.bucketMs),
+      vwap: null,
+      timeframeLabel: tfOption.label,
+    })
     return {
       status: 'Connecting',
       price: null,
@@ -350,6 +526,7 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
       events: [],
       snapshot: emptySnapshot(`${confirmationMode} confirmation`),
       confirmation,
+      story,
     }
   })
 
@@ -411,6 +588,7 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
       let deltaSeries: number[] = []
       let cvdSeries: number[] = []
       let volumeSeries: number[] = []
+      let replayedBuckets: Bucket[] = []
       let effectiveAnchor = alignedSessionAnchor
 
       if (trades.length) {
@@ -426,6 +604,7 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
             end,
             bucketMs,
           }).buckets
+          replayedBuckets = b
           delta = b[b.length - 1].delta
           cvd = b[b.length - 1].cvd
           deltaSeries = b.slice(-12).map(bucket => Number(bucket.delta) / 1e8)
@@ -571,6 +750,21 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
             ? formatPrice(String(priceEndNum))
             : null
 
+      const story = evaluateMarketStory({
+        buckets: buildLiveStoryBuckets({
+          now,
+          bucketMs,
+          replayedBuckets,
+          trades,
+          oiHistory,
+          liquidations,
+          cached,
+          lastPriceNum: priceEndNum,
+        }),
+        vwap: context.vwap,
+        timeframeLabel: tf.label,
+      })
+
       setState({
         status: effectiveStatus,
         price: displayPrice,
@@ -588,6 +782,7 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
         events: Array.from(eventsMap.values()).sort((a, b) => b.time - a.time).slice(0, 20),
         snapshot,
         confirmation,
+        story,
       })
     }
 

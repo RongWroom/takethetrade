@@ -324,3 +324,27 @@ test('Reset My Trade clears an invalid draft and persists the blank state on rel
   await expect(page.getByRole('dialog', { name: 'My Trade' }).getByText('Thinking about a trade?')).toBeVisible()
   expect(await page.evaluate(() => localStorage.getItem('ttt.myTrade.v1'))).toBe('{"side":null,"entry":"","stop":"","leverage":""}')
 })
+
+test('Market Story visual displays chapter progression and flags order-flow divergence', async ({ page }) => {
+  await page.routeWebSocket('wss://ws.okx.com/ws/v5/public', ws => {
+    ws.onMessage(() => {
+      const now = Date.now()
+      ws.send(JSON.stringify({ event: 'subscribe' }))
+      ws.send(
+        JSON.stringify({
+          arg: { channel: 'trades' },
+          data: [
+            { instId: 'BTC-USDT-SWAP', tradeId: 'div-1', side: 'buy', sz: '10', ts: String(now - 200), px: '80000' },
+            { instId: 'BTC-USDT-SWAP', tradeId: 'div-2', side: 'sell', sz: '800', ts: String(now - 100), px: '80050' },
+          ],
+        }),
+      )
+    })
+  })
+  await page.goto('/')
+  const storySection = page.getByRole('region', { name: 'Market Story visual' })
+  await expect(storySection).toBeVisible()
+  await expect(storySection.getByText(/Hollow rise · Divergence/).first()).toBeVisible({ timeout: 10000 })
+  await expect(storySection.getByRole('status', { name: 'Order-flow divergence detected' })).toBeVisible()
+})
+

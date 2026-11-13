@@ -4,6 +4,7 @@ import { OI_CHEAT_SHEET_ROWS, type CvdMedianProfile } from './domain/tradeEngine
 import { useLiveMarketData } from './features/LiveOverview'
 import { LIQUIDATION_LARGE_USD, SIGNAL_RULES } from './domain/signalConfirmation'
 import { describeConfirmation } from './features/confirmationLabels'
+import { MarketStory } from './features/MarketStory'
 import { MyTradePanel } from './features/MyTradePanel'
 import { useConfirmationPreference } from './features/useConfirmationPreference'
 import { useTradeCheck } from './features/useTradeCheck'
@@ -163,6 +164,14 @@ function App() {
             </small>
           </div>
         </div>
+        <MarketStory
+          story={live.story}
+          timeframeShort={timeframe}
+          confirmedTitle={live.oiRegime.activeRow?.marketTitle ?? null}
+          confirmedSentiment={live.oiRegime.activeRow?.sentiment ?? null}
+          confirmationStatus={confirmationInfo.status}
+          focus={focus}
+        />
         <div className="section-heading">
           <div>
             <p className="eyebrow">THE BIG PICTURE</p>
