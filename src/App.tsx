@@ -10,7 +10,7 @@ import { useConfirmationPreference } from './features/useConfirmationPreference'
 import { useTradeCheck } from './features/useTradeCheck'
 import type { Metric } from './fixtures/demo'
 
-type Panel = Metric['id'] | 'pulse' | 'events' | 'settings' | null
+type Panel = Metric['id'] | 'pulse' | 'events' | 'settings' | 'guide' | null
 
 function formatSignedBtcNum(n: number): string {
   if (Math.abs(n) < 1e-6) return '0.00 BTC'
@@ -99,7 +99,9 @@ function App() {
       ? 'Market Pulse'
       : panel === 'events'
         ? 'Market Events'
-        : 'Settings'
+        : panel === 'guide'
+          ? 'How it works'
+          : 'Settings'
 
   return (
     <div className="app">
@@ -118,6 +120,7 @@ function App() {
           <button onClick={() => setPanel('events')}>
             Events <span className="nav-count">{visibleEvents.length}</span>
           </button>
+          <button onClick={() => setPanel('guide')}>Guide</button>
           <button onClick={() => setPanel('settings')}>Settings</button>
           <button className="nav-trade" onClick={() => setTradeOpen(true)} aria-haspopup="dialog">
             My Trade
@@ -171,6 +174,7 @@ function App() {
           confirmedSentiment={live.oiRegime.activeRow?.sentiment ?? null}
           confirmationStatus={confirmationInfo.status}
           focus={focus}
+          onOpenGuide={() => setPanel('guide')}
         />
         <div className="section-heading">
           <div>
@@ -544,6 +548,33 @@ function App() {
                 </div>
               ))
             ))}
+          {panel === 'guide' && (
+            <>
+              <p>One glance answers: who's pushing, is price listening, are positions building or unwinding, and what just changed?</p>
+              <div className="detail-box">
+                <strong>📈 The Market Story (top panel)</strong>
+                <p>💹 <strong>PRICE</strong> — where price is moving, with the dotted 6-hour average (VWAP) as a reference.</p>
+                <p>⚖️ <strong>PRESSURE</strong> — green bars up = buyers hitting market orders; pink bars down = sellers. Taller bars = stronger push. Dashed slots = missing data, never faked.</p>
+                <p>📊 <strong>POSITIONS</strong> — ▲ new leveraged money entering · ▼ money leaving · — steady · · no snapshot yet.</p>
+                <p>⚡ <strong>EVENTS</strong> — reported liquidations and signals pinned to the exact moment they happened.</p>
+              </div>
+              <div className="detail-box">
+                <strong>🟡 Warnings to watch</strong>
+                <p>◇ <strong>Divergence</strong> — price goes one way while real order flow goes the other. "Hollow rise" = price up but sellers secretly winning. "Hollow drop" = price down but buyers stepping in. These moves can be fragile.</p>
+                <p>◈ <strong>Possible absorption</strong> — one side pushes hard but price won't move; a large passive trader may be soaking it up.</p>
+              </div>
+              <div className="detail-box">
+                <strong>🧩 Chapters, cards &amp; pulse</strong>
+                <p>The progression pills (Balanced → Buying builds → …) show how the market got here. A dashed pill is still developing live.</p>
+                <p>Tap the four cards to flip them for plain-English explanations. Market Pulse waits for two matching closed windows before confirming a trend — it won't jump at noise.</p>
+              </div>
+              <div className="detail-box">
+                <strong>🚦 The 10-second routine</strong>
+                <p>1️⃣ Headline — who's winning? 2️⃣ Chapters — how did we get here? 3️⃣ Amber warnings — anything suspicious? 4️⃣ Confirmed badge — did the move pass the two-window test?</p>
+                <p>⚠️ Context, not a signal — this app never places trades and covers only OKX reported data.</p>
+              </div>
+            </>
+          )}
           {panel === 'settings' && (
             <>
               <p>Adjust the view for a quieter overview.</p>

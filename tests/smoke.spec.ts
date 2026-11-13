@@ -346,5 +346,14 @@ test('Market Story visual displays chapter progression and flags order-flow dive
   await expect(storySection).toBeVisible()
   await expect(storySection.getByText(/Hollow rise · Divergence/).first()).toBeVisible({ timeout: 10000 })
   await expect(storySection.getByRole('status', { name: 'Order-flow divergence detected' })).toBeVisible()
+
+  await storySection.getByRole('button', { name: 'How it works' }).click()
+  await expect(page.getByRole('dialog').getByRole('heading', { name: 'How it works' })).toBeVisible()
+  await expect(page.getByText('Divergence', { exact: false }).first()).toBeVisible()
+  await page.getByRole('button', { name: 'Close dialog' }).click()
+
+  await page.getByRole('button', { name: 'Guide', exact: true }).click()
+  await expect(page.getByRole('dialog').getByRole('heading', { name: 'How it works' })).toBeVisible()
+  await page.keyboard.press('Escape')
 })
 

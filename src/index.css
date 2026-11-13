@@ -256,6 +256,24 @@ h2 {
 .ms-eyebrow-row .eyebrow {
   margin: 0;
 }
+.ms-guide-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1px solid #4a657b;
+  background: #0f1923;
+  color: #9fb8ce;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 0;
+}
+.ms-guide-btn:hover {
+  border-color: #67d1ad;
+  color: #67d1ad;
+}
 .ms-live-badge,
 .ms-confirmed-badge {
   display: inline-flex;

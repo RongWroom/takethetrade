@@ -44,6 +44,7 @@ export function MarketStory({
   confirmedSentiment,
   confirmationStatus,
   focus = false,
+  onOpenGuide,
 }: {
   story: MarketStoryEvaluation
   timeframeShort: string
@@ -51,6 +52,7 @@ export function MarketStory({
   confirmedSentiment: 'Bullish' | 'Bearish' | null
   confirmationStatus: string
   focus?: boolean
+  onOpenGuide?: () => void
 }) {
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null)
 
@@ -79,6 +81,17 @@ export function MarketStory({
         <div className="ms-title-block">
           <div className="ms-eyebrow-row">
             <span className="eyebrow">MARKET STORY · {timeframeShort.toUpperCase()} TIMELINE</span>
+            {onOpenGuide && (
+              <button
+                type="button"
+                className="ms-guide-btn"
+                onClick={onOpenGuide}
+                aria-label="How it works"
+                title="How it works"
+              >
+                ?
+              </button>
+            )}
             <span className="ms-live-badge" title="Developing live buckets are dashed; confirmed multi-window context is solid">
               <i className="ms-dot" /> Live developing
             </span>
