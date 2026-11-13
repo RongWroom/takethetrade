@@ -77,11 +77,11 @@ function App() {
 
   const activeMetric = typeof panel === 'string' ? live.metrics.find(m => m.id === panel) ?? null : null
   const visibleEvents = live.events.filter(ev => !dismissedIds.includes(ev.id))
-  const liquidationEventIds = visibleEvents.filter(ev => ev.kind === 'liquidation').map(ev => ev.id)
-  const dismissLiquidationHistory = () => setDismissedIds(prev => Array.from(new Set([...prev, ...liquidationEventIds])))
+  const visibleEventIds = visibleEvents.map(ev => ev.id)
+  const clearMarketEvents = () => setDismissedIds(prev => Array.from(new Set([...prev, ...visibleEventIds])))
   const confirmationInfo = describeConfirmation(live.confirmation)
+  const observed = live.confirmation.observed
   const regimeBadge = live.confirmation.status === 'confirmed' ? 'CONFIRMED' : 'LAST CONFIRMED'
-  const liquidationDismissNote = `${liquidationEventIds.length} liquidation ${liquidationEventIds.length === 1 ? 'alert' : 'alerts'} shown. Dismisses liquidation alerts from the inbox only. Live liquidation totals and calculations are unchanged; new alerts will still appear.`
 
   const toggleFlip = (id: string) => {
     setFlippedCards(prev => ({ ...prev, [id]: !prev[id] }))
@@ -289,6 +289,8 @@ function App() {
             <strong>{live.pulse.headline}</strong>
             <span className="pulse-copy">{live.pulse.copy}</span>
             <span className="oi-mini-note">{confirmationInfo.status} · {confirmationInfo.progress}</span>
+            <span className="oi-mini-note">{confirmationInfo.detail}</span>
+            <span className="oi-mini-note">{confirmationInfo.reason}</span>
             <span className="pulse-link">
               Explore the evidence <span>→</span>
             </span>
@@ -312,24 +314,29 @@ function App() {
                 </div>
               </div>
               <p className="oi-mini-note">{confirmationInfo.progress}</p>
+              <p className="oi-mini-note">{confirmationInfo.detail}</p>
+              <p className="oi-mini-note">{confirmationInfo.reason}</p>
+              <p className="oi-mini-note">
+                {observed === null ? 'No closed window yet' : live.confirmation.status === 'insufficient' ? 'Last observed window (feed interrupted, not live)' : 'Latest closed window'}
+              </p>
 
               <div className="oi-live-strip">
                 <div className="oi-signal-pill">
                   <small>Price</small>
-                  <strong className={live.oiRegime.priceDirection === 'rising' ? 'up' : live.oiRegime.priceDirection === 'declining' ? 'down' : ''}>
-                    {live.oiRegime.priceDirection === 'rising' ? '↑ rising' : live.oiRegime.priceDirection === 'declining' ? '↓ declining' : '→ flat'}
+                  <strong className={observed?.priceDirection === 'rising' ? 'up' : observed?.priceDirection === 'declining' ? 'down' : ''}>
+                    {observed === null ? 'Awaiting a closed window' : observed.priceDirection === 'rising' ? '↑ rising' : observed.priceDirection === 'declining' ? '↓ declining' : '→ flat'}
                   </strong>
                 </div>
                 <div className="oi-signal-pill">
                   <small>Volume</small>
-                  <strong className={live.oiRegime.volumeDirection === 'increasing' ? 'up' : live.oiRegime.volumeDirection === 'decreasing' ? 'down' : ''}>
-                    {live.oiRegime.volumeDirection === 'increasing' ? '↑ increasing' : live.oiRegime.volumeDirection === 'decreasing' ? '↓ decreasing' : '→ flat'}
+                  <strong className={observed?.volumeDirection === 'increasing' ? 'up' : observed?.volumeDirection === 'decreasing' ? 'down' : ''}>
+                    {observed === null ? 'Awaiting a closed window' : observed.volumeDirection === 'increasing' ? '↑ increasing' : observed.volumeDirection === 'decreasing' ? '↓ decreasing' : '→ flat'}
                   </strong>
                 </div>
                 <div className="oi-signal-pill">
                   <small>Open interest</small>
-                  <strong className={live.oiRegime.oiDirection === 'increasing' ? 'up' : live.oiRegime.oiDirection === 'decreasing' ? 'down' : ''}>
-                    {live.oiRegime.oiDirection === 'increasing' ? '↑ increasing' : live.oiRegime.oiDirection === 'decreasing' ? '↓ decreasing' : '→ flat'}
+                  <strong className={observed?.oiDirection === 'increasing' ? 'up' : observed?.oiDirection === 'decreasing' ? 'down' : ''}>
+                    {observed === null ? 'Awaiting a closed window' : observed.oiDirection === 'increasing' ? '↑ increasing' : observed.oiDirection === 'decreasing' ? '↓ decreasing' : '→ flat'}
                   </strong>
                 </div>
                 <div className="oi-signal-pill verdict-cell">
@@ -459,14 +466,10 @@ function App() {
                 </div>
               )}
               <p>{activeMetric.detail}</p>
-              {activeMetric.id === 'liquidations' && liquidationEventIds.length > 0 && (
-                <div className="detail-box">
-                  <strong>Liquidation alerts</strong>
-                  <p>{liquidationDismissNote}</p>
-                  <button className="secondary" onClick={dismissLiquidationHistory}>
-                    Dismiss liquidation history
-                  </button>
-                </div>
+              {activeMetric.id === 'liquidations' && (
+                <button type="button" className="secondary" onClick={() => setPanel('events')}>
+                  View Market Events
+                </button>
               )}
               <div className="detail-box">
                 <strong>Source &amp; session coverage</strong>
@@ -494,20 +497,27 @@ function App() {
               </div>
             </>
           )}
-          {panel === 'events' && liquidationEventIds.length > 0 && (
-            <div className="detail-box">
-              <strong>Liquidation alerts</strong>
-              <p>{liquidationDismissNote}</p>
-              <button className="secondary" onClick={dismissLiquidationHistory}>
-                Dismiss liquidation history
-              </button>
+          {panel === 'events' && (
+            <div className="event-toolbar">
+              <div>
+                <strong>Event history</strong>
+                <span className="muted"> · {visibleEvents.length} {visibleEvents.length === 1 ? 'event' : 'events'}</span>
+              </div>
+              {visibleEvents.length > 0 && (
+                <button type="button" className="secondary" onClick={clearMarketEvents}>
+                  Clear Market Events
+                </button>
+              )}
             </div>
+          )}
+          {panel === 'events' && visibleEvents.length > 0 && (
+            <p className="event-helper">Clears this event list only. Live totals and calculations are unchanged; new events will still appear.</p>
           )}
           {panel === 'events' &&
             (visibleEvents.length === 0 ? (
               <div className="empty">
                 <strong>All quiet here</strong>
-                <p>No exceptional liquidation clusters or delta spikes recorded in this session.</p>
+                <p>No events to show. New market events will appear here.</p>
               </div>
             ) : (
               visibleEvents.map(ev => (
@@ -555,10 +565,13 @@ function App() {
                   <input type="radio" name="confirmation-mode" value="15m" checked={confirmationMode === '15m'} onChange={() => setConfirmationMode('15m')} />
                 </label>
                 <p>
-                  Changing this restarts confirmation and warms up again. Warm-up: the first complete window after the page opens is never confirmed, and strong labels also need a prior full window for volume.
+                  Changing this restarts confirmation. Two matching valid closes are needed; a strong label also needs a prior valid window for volume. Windows are fixed UTC blocks: for 5m, 12:05–12:10 and 12:10–12:15 UTC are two closed windows. The block in progress is never evaluated and no live candle is used.
                 </p>
                 <p>
-                  Uncalibrated defaults: price must move at least the larger of 0.05% or 20% of the previous window&apos;s range; open interest must change at least 0.05%; a strong label also needs volume up at least 10%. Open interest must arrive at least every {SIGNAL_RULES.maximumSampleGapMs / 1000} seconds, and trades must cover the window start and end.
+                  Uncalibrated defaults: price must move at least the larger of {SIGNAL_RULES.minimumPricePct}% or {SIGNAL_RULES.priorRangeFraction * 100}% of the previous window&apos;s range; open interest must change at least {SIGNAL_RULES.minimumOiPct}%; a strong label also needs volume up at least {SIGNAL_RULES.minimumVolumeChangePct}%.
+                </p>
+                <p>
+                  Open interest is checked every {SIGNAL_RULES.oiRefreshMs / 1000} seconds over public REST and on each WebSocket update. Unchanged open interest is normal. Values older than {SIGNAL_RULES.maximumOiAgeMs / 1000} seconds are not used. Actual feed gaps restart confirmation; switching tabs alone does not.
                 </p>
                 <p>
                   Large reported liquidation alerts start at ${LIQUIDATION_LARGE_USD.toLocaleString('en-US')}, a starting default rather than a calibrated market-wide threshold. Liquidation alerts never change the confirmed regime.

@@ -9,22 +9,25 @@ const STATUS_LABEL: Record<ConfirmationView['status'], string> = {
   insufficient: 'Insufficient data',
 }
 
-export function describeConfirmation(view: ConfirmationView): { status: string; progress: string } {
-  const { mode, status, completed, candidate, lastClosedAt } = view
+const utcTime = (t: number) => `${new Date(t).toISOString().slice(11, 16)} UTC`
+
+const signedPct = (n: number | null) => (n === null ? 'unavailable' : `${n >= 0 ? '+' : ''}${n.toFixed(2)}%`)
+
+export function describeConfirmation(view: ConfirmationView): { status: string; progress: string; detail: string; reason: string } {
+  const { mode, status, completed, candidate, lastWindow, evaluatedWindows, rejectedWindows, nextCloseAt, reason } = view
   const title = candidate ? OI_CHEAT_SHEET_ROWS.find(r => r.id === candidate)?.marketTitle ?? candidate : null
-  const closed = lastClosedAt !== null ? ` · last ${mode} close ${new Date(lastClosedAt).toISOString().slice(11, 16)} UTC` : ''
   const required = SIGNAL_RULES.confirmations
   const progress =
-    status === 'warming'
-      ? lastClosedAt === null
-        ? `Waiting for the first complete ${mode} window with live trades and open interest. 0 of ${required} matching closes.`
-        : `Volume baseline ready. Waiting for two qualifying ${mode} closes.`
-      : status === 'insufficient'
-        ? `Live feed or open-interest data was interrupted. Fresh complete ${mode} windows are needed before any regime is confirmed.`
+    status === 'confirmed'
+      ? `${title ?? 'Regime'}: ${completed} of ${required} matching ${mode} closes.`
+      : status === 'pending'
+        ? `Candidate ${title ?? 'none'}: ${completed} of ${required} matching ${mode} closes.`
         : status === 'mixed'
-          ? `Recent ${mode} closes disagree, so no regime is confirmed. ${completed} of ${required} matching closes.`
-          : status === 'pending'
-            ? `Candidate ${title ?? 'none'}: ${completed} of ${required} matching ${mode} closes${closed}.`
-            : `${title ?? 'Regime'}: ${completed} of ${required} matching ${mode} closes${closed}.`
-  return { status: STATUS_LABEL[status], progress }
+          ? `Mixed: ${completed} of ${required} matching ${mode} closes. No confirmed direction.`
+          : `${completed} of ${required} matching ${mode} closes.`
+  const windowText = lastWindow
+    ? `Last ${mode} window ${utcTime(lastWindow.start)}–${utcTime(lastWindow.end)}: price ${signedPct(lastWindow.pricePct)}, OI ${signedPct(lastWindow.oiPct)}, volume ${lastWindow.volumeChangePct === null ? 'baseline unavailable (strong labels wait for a prior full window)' : signedPct(lastWindow.volumeChangePct)}.`
+    : `No ${mode} window has closed yet.`
+  const detail = `Valid windows ${evaluatedWindows} · rejected ${rejectedWindows}. ${windowText} Next close ${utcTime(nextCloseAt)}.`
+  return { status: STATUS_LABEL[status], progress, detail, reason }
 }

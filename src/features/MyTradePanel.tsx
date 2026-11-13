@@ -102,7 +102,8 @@ export function MyTradePanel({ open, onClose, draft, setDraft, result, livePrice
         </p>
 
         <div className="mt-actions">
-          <button type="button" className="secondary" onClick={resetTrade}>
+          <span className="mt-section-label">Trade direction</span>
+          <button type="button" className="secondary mt-reset" onClick={resetTrade}>
             Reset My Trade
           </button>
         </div>

@@ -28,6 +28,7 @@ import {
 import { calcAtrPct, calcVwap, type MarketSnapshot } from '../domain/tradeCheck'
 import {
   LIQUIDATION_LARGE_USD,
+  SIGNAL_RULES,
   SignalConfirmation,
   type ConfirmationMode,
   type ConfirmationView,
@@ -315,7 +316,7 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
 
   const [state, setState] = useState<LiveDashboardState>(() => {
     const anchor = Math.floor(Date.now() / tfOption.bucketMs) * tfOption.bucketMs
-    const confirmation = new SignalConfirmation(confirmationMode, Date.now()).view(Date.now(), false)
+    const confirmation = new SignalConfirmation(confirmationMode, Date.now()).view(Date.now(), false, 'Connection: Connecting.')
     return {
       status: 'Connecting',
       price: null,
@@ -376,6 +377,18 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
     let oiInitial: number | null = null
     let oiTime: number | null = null
     const oiHistory: { time: number; btc: number }[] = []
+    let oiRefreshing = false
+    const acceptOi = (sample: { btc: string; time: number }) => {
+      const num = Number(sample.btc)
+      if (!Number.isFinite(num) || sample.time > Date.now() + 1000 || (oiTime !== null && sample.time <= oiTime)) return false
+      oi = sample.btc
+      oiTime = sample.time
+      if (oiInitial === null) oiInitial = num
+      oiHistory.push({ time: sample.time, btc: num })
+      if (oiHistory.length > 120) oiHistory.shift()
+      trackerRef.current?.openInterest({ time: sample.time, btc: num }, Date.now())
+      return true
+    }
     const seenLiqIds = new Set<string>()
     let liquidations: Liquidation[] = []
     const eventsMap = new Map<string, MarketEventItem>()
@@ -422,7 +435,7 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
           status = 'Data error'
           gap = true
           trades = []
-          tracker.interrupt(now)
+          tracker.interrupt(now, 'Trade data could not be replayed.')
         }
       }
 
@@ -451,7 +464,7 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
       }
 
       const effectiveStatus = status === 'Connected' && updated !== null && now - updated > 15000 ? 'Stale' : status
-      const oiStale = status !== 'Connected' || oiTime === null || now - oiTime > 15000
+      const oiStale = status !== 'Connected' || oiTime === null || now - oiTime > SIGNAL_RULES.maximumOiAgeMs
 
       const activeLiquidations = liquidations.filter(l => l.time >= now - bucketMs && l.time <= now)
       const liqSeries = activeLiquidations.slice(-12).map(l => l.notionalUsd)
@@ -518,7 +531,17 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
         gap,
       })
 
-      const confirmation = tracker.view(now, effectiveStatus === 'Connected' && !oiStale && document.visibilityState !== 'hidden')
+      const healthReason =
+        effectiveStatus === 'Stale'
+          ? 'Trade feed is stale.'
+          : effectiveStatus !== 'Connected'
+            ? `Connection: ${effectiveStatus}.`
+            : oiTime === null
+              ? 'Waiting for the first BTC-USDT-SWAP open-interest snapshot.'
+              : oiStale
+                ? 'Latest open-interest snapshot is older than 90 seconds.'
+                : undefined
+      const confirmation = tracker.view(now, effectiveStatus === 'Connected' && !oiStale, healthReason)
       const oiRegime = confirmation.confirmed ?? emptyOiRegime
 
       const recentLiqs = liquidations.filter(l => l.time >= now - 15 * minute && l.time <= now)
@@ -597,7 +620,7 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
           const msg = JSON.parse(String(e.data))
           if (msg.event === 'error') {
             gap = true
-            trackerRef.current?.interrupt(Date.now())
+            trackerRef.current?.interrupt(Date.now(), 'Subscription error from the OKX feed.')
             status = 'Subscription error'
             socket?.close()
             return
@@ -612,19 +635,7 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
           if (msg.arg?.channel === 'open-interest') {
             let receivedNewOi = false
             for (const row of msg.data) {
-              const sample = normalizeOkxOpenInterest(row)
-              if (sample.time <= Date.now() + 60000 && (oiTime === null || sample.time >= oiTime)) {
-                oi = sample.btc
-                oiTime = sample.time
-                const num = Number(sample.btc)
-                if (Number.isFinite(num)) {
-                  if (oiInitial === null) oiInitial = num
-                  oiHistory.push({ time: sample.time, btc: num })
-                  if (oiHistory.length > 120) oiHistory.shift()
-                  trackerRef.current?.openInterest({ time: sample.time, btc: num }, Date.now())
-                }
-                receivedNewOi = true
-              }
+              if (acceptOi(normalizeOkxOpenInterest(row))) receivedNewOi = true
             }
             if (receivedNewOi && oiHistory.length === 1) publish()
             return
@@ -696,14 +707,14 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
           if (wasEmpty && trades.length > 0) publish()
         } catch {
           gap = true
-          trackerRef.current?.interrupt(Date.now())
+          trackerRef.current?.interrupt(Date.now(), 'Feed message could not be parsed.')
         }
       }
       socket.onerror = () => socket?.close()
       socket.onclose = () => {
         if (stopped) return
         gap = true
-        trackerRef.current?.interrupt(Date.now())
+        trackerRef.current?.interrupt(Date.now(), 'Connection closed.')
         status = 'Disconnected'
         publish()
         attempts++
@@ -712,16 +723,31 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
     }
 
     const onVisibilityChange = () => {
-      if (document.visibilityState === 'hidden') {
-        gap = true
-      } else if (socket?.readyState === WebSocket.OPEN && Date.now() - lastReceive > 30000) {
+      if (document.visibilityState !== 'hidden' && socket?.readyState === WebSocket.OPEN && Date.now() - lastReceive > 30000) {
         gap = true
         socket.close()
       }
-      trackerRef.current?.interrupt(Date.now())
       publish()
     }
     document.addEventListener('visibilitychange', onVisibilityChange)
+    const refreshOi = async () => {
+      if (oiRefreshing) return
+      oiRefreshing = true
+      try {
+        const res = await fetch('https://www.okx.com/api/v5/public/open-interest?instType=SWAP&instId=BTC-USDT-SWAP', { signal: contextController.signal })
+        if (!res.ok) return
+        const json = (await res.json()) as { data?: unknown }
+        const row = Array.isArray(json.data) ? json.data.find(r => (r as { instId?: unknown }).instId === 'BTC-USDT-SWAP') : undefined
+        if (!row || stopped) return
+        if (acceptOi(normalizeOkxOpenInterest(row))) publish()
+      } catch {
+        return
+      } finally {
+        oiRefreshing = false
+      }
+    }
+    void refreshOi()
+    const oiTimer = setInterval(() => void refreshOi(), SIGNAL_RULES.oiRefreshMs)
     const refreshContext = async () => {
       const result = await fetchTradeContext(contextController.signal)
       if (stopped) return
@@ -746,6 +772,7 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
       document.removeEventListener('visibilitychange', onVisibilityChange)
       clearInterval(render)
       clearInterval(contextTimer)
+      clearInterval(oiTimer)
       contextController.abort()
       if (ping) clearInterval(ping)
       if (timer) clearTimeout(timer)

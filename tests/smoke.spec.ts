@@ -177,7 +177,7 @@ test('confirmation mode defaults to 5m, stays independent of the chart, and pers
   await expect(page.getByRole('radio', { name: /Slow/ })).toBeChecked()
 })
 
-test('bulk liquidation dismissal keeps card totals, flow alerts, and later liquidation alerts', async ({ page }) => {
+test('clear market events removes both alert types while live totals stay and new events appear', async ({ page }) => {
   let socket: { send: (message: string) => void } | undefined
   let firstTs = 0
   const liquidationMessage = (ts: number) =>
@@ -199,18 +199,94 @@ test('bulk liquidation dismissal keeps card totals, flow alerts, and later liqui
   await expect(page.getByText('$160.0K')).toBeVisible()
 
   await page.getByRole('button', { name: /Events/ }).click()
-  await page.getByRole('button', { name: 'Dismiss liquidation history' }).click()
+  await page.getByRole('button', { name: 'Clear Market Events' }).click()
+  await expect(page.getByText('All quiet here')).toBeVisible()
+  await expect(page.getByText('No events to show. New market events will appear here.')).toBeVisible()
   await expect(page.getByText('Large long liquidation')).not.toBeVisible()
-  await expect(page.getByText('Elevated taker buying delta')).toBeVisible()
+  await expect(page.getByText('Elevated taker buying delta')).not.toBeVisible()
   await page.getByRole('button', { name: 'Close dialog' }).click()
+  await expect(page.getByText('No events in your inbox')).toBeVisible()
   await expect(page.getByText('$160.0K')).toBeVisible()
 
   socket!.send(liquidationMessage(firstTs + 1))
   await expect(page.getByText('$320.0K')).toBeVisible()
+  await expect(page.getByText('1 event in your inbox')).toBeVisible()
   await page.getByRole('button', { name: /Events/ }).click()
   await expect(page.getByText('Large long liquidation')).toBeVisible()
-  await expect(page.getByText('Elevated taker buying delta')).toBeVisible()
+  await expect(page.getByText('Elevated taker buying delta')).not.toBeVisible()
 })
+
+test('flow-only market events can be cleared from the Events dialog', async ({ page }) => {
+  await page.routeWebSocket('wss://ws.okx.com/ws/v5/public', ws => {
+    ws.onMessage(() => {
+      ws.send(JSON.stringify({ event: 'subscribe' }))
+      ws.send(JSON.stringify({ arg: { channel: 'trades' }, data: [{ instId: 'BTC-USDT-SWAP', tradeId: 'big-sell', side: 'sell', sz: '2500', ts: String(Date.now()), px: '80000' }] }))
+    })
+  })
+  await page.goto('/')
+  await expect(page.getByText('1 event in your inbox')).toBeVisible({ timeout: 10000 })
+
+  await page.getByRole('button', { name: /Events/ }).click()
+  await expect(page.getByText('Elevated taker selling delta')).toBeVisible()
+  await expect(page.getByText('Event history')).toBeVisible()
+  await page.getByRole('button', { name: 'Clear Market Events' }).click()
+  await expect(page.getByText('No events to show. New market events will appear here.')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Clear Market Events' })).not.toBeVisible()
+  await page.getByRole('button', { name: 'Close dialog' }).click()
+  await expect(page.getByText('No events in your inbox')).toBeVisible()
+})
+
+for (const width of [320, 390, 768, 1280]) {
+  test(`My Trade reset, direction and nav badge fit at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 800 })
+    await page.routeWebSocket('wss://ws.okx.com/ws/v5/public', ws => {
+      ws.onMessage(() => {
+        ws.send(JSON.stringify({ event: 'subscribe' }))
+        ws.send(JSON.stringify({ arg: { channel: 'trades' }, data: [{ instId: 'BTC-USDT-SWAP', tradeId: 't1', side: 'buy', sz: '100', ts: String(Date.now()), px: '80000' }] }))
+      })
+    })
+    await page.goto('/')
+    await expect(page.getByText('$80,000.00')).toBeVisible({ timeout: 10000 })
+    await page.locator('.nav-trade').click()
+    const drawer = page.getByRole('dialog', { name: 'My Trade' })
+    await expect(drawer).toBeVisible()
+
+    const reset = drawer.getByRole('button', { name: 'Reset My Trade' })
+    const long = drawer.getByRole('button', { name: /Long/ })
+    const short = drawer.getByRole('button', { name: /Short/ })
+    const box = async (locator: typeof reset) => (await locator.boundingBox())!
+    const expectInsideDrawer = async (locator: typeof reset) => {
+      const b = await box(locator)
+      const d = await box(drawer)
+      expect(b.x).toBeGreaterThanOrEqual(d.x - 1)
+      expect(b.x + b.width).toBeLessThanOrEqual(d.x + d.width + 1)
+    }
+    const expectToolbarClear = async () => {
+      const r = await box(reset)
+      const l = await box(long)
+      const s = await box(short)
+      expect(r.y + r.height + 8).toBeLessThanOrEqual(l.y)
+      expect(l.x + l.width).toBeLessThanOrEqual(s.x + 1)
+      for (const locator of [reset, long, short]) await expectInsideDrawer(locator)
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+    }
+
+    await expectToolbarClear()
+    await long.click()
+    await expect(drawer.getByText('Thinking about a trade?').or(drawer.getByText('If you entered now'))).toBeVisible()
+    await expectToolbarClear()
+
+    await page.keyboard.press('Escape')
+    await expect(drawer).not.toBeVisible()
+    const navButton = await box(page.locator('.nav-trade'))
+    const badge = await box(page.locator('.nav-trade-side'))
+    expect(badge.x).toBeGreaterThanOrEqual(navButton.x - 1)
+    expect(badge.x + badge.width).toBeLessThanOrEqual(navButton.x + navButton.width + 1)
+    expect(badge.y).toBeGreaterThanOrEqual(navButton.y - 1)
+    expect(badge.y + badge.height).toBeLessThanOrEqual(navButton.y + navButton.height + 1)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+  })
+}
 
 test('Reset My Trade clears an invalid draft and persists the blank state on reload', async ({ page }) => {
   await page.routeWebSocket('wss://ws.okx.com/ws/v5/public', ws => {

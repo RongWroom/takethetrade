@@ -114,7 +114,7 @@ describe('closed-window signal confirmation', () => {
     expect(tracker.view(3 * duration + 1000, false).confirmed).toBeNull()
     expect(tracker.view(3 * duration + 2000, true).completed).toBe(0)
     const gapTracker = new SignalConfirmation('5m', 0)
-    expect(fillWindow(gapTracker, 0, { omitOiAt: 20_000 }).status).toBe('insufficient')
+    expect(fillWindow(gapTracker, 0, { omitOiAt: 20_000 }).evaluatedWindows).toBe(1)
     const skipped = confirmedTracker()
     expect(skipped.view(6 * duration + 1000, true).confirmed).toBeNull()
     const noTrades = new SignalConfirmation('5m', 0)
@@ -143,5 +143,76 @@ describe('closed-window signal confirmation', () => {
     expect(view.mode).toBe('15m')
     expect(view.lastClosedAt).toBe(3 * slow)
     expect(SIGNAL_RULES.confirmations).toBe(2)
+  })
+
+  it('evaluates an hour of quiet OI as mixed, rather than restarting warm-up', () => {
+    const tracker = new SignalConfirmation('5m', 0)
+    for (let time = 0; time < 12 * duration; time += 10_000) {
+      if (time % 60_000 === 0) tracker.openInterest({ time, btc: 30_000 }, time)
+      tracker.trade({ id: `hour-${time}`, time, price: 80_000 + time / 10_000, quantityBtc: '1', side: 'buy' }, time)
+      tracker.view(time, true)
+    }
+    const view = tracker.view(12 * duration, true)
+    expect(view.evaluatedWindows).toBe(12)
+    expect(view.rejectedWindows).toBe(0)
+    expect(view.status).toBe('mixed')
+    expect(view.observed?.priceDirection).toBe('flat')
+    expect(view.observed?.oiDirection).toBe('flat')
+    expect(view.lastWindow?.pricePct).toBeGreaterThan(0)
+    expect(view.lastWindow?.oiPct).toBe(0)
+    expect(view.lastClosedAt).toBe(12 * duration)
+    expect(view.nextCloseAt).toBe(13 * duration)
+    expect(view.pulse.headline).not.toContain('Waiting')
+  })
+
+  it('accepts once-per-minute OI and confirms two windows without requiring 15-second updates', () => {
+    const tracker = new SignalConfirmation('5m', 0)
+    for (let time = 0; time < 2 * duration; time += 10_000) {
+      if (time % 60_000 === 0) tracker.openInterest({ time, btc: 30_000 - 30 * time / duration }, time)
+      tracker.trade({ id: `minute-${time}`, time, price: 80_000 + 100 * time / duration, quantityBtc: '1', side: 'buy' }, time)
+      tracker.view(time, true)
+    }
+    const view = tracker.view(2 * duration, true)
+    expect(view.evaluatedWindows).toBe(2)
+    expect(view.rejectedWindows).toBe(0)
+    expect(view.confirmed?.activeRowId).toBe('weak-uptrend')
+  })
+
+  it('reports missing or expired OI without claiming observed flat conditions', () => {
+    for (const withInitialOi of [false, true]) {
+      const tracker = new SignalConfirmation('5m', 0)
+      if (withInitialOi) tracker.openInterest({ time: 0, btc: 30_000 }, 0)
+      for (let time = 0; time < duration; time += 10_000) {
+        tracker.trade({ id: String(time), time, price: 80_000 + time / 1000, quantityBtc: '1', side: 'buy' }, time)
+      }
+      const view = tracker.view(duration, true)
+      expect(view.status).toBe('insufficient')
+      expect(view.evaluatedWindows).toBe(0)
+      expect(view.rejectedWindows).toBe(1)
+      expect(view.observed).toBeNull()
+      expect(view.reason).toContain(withInitialOi ? '90 seconds old' : 'No usable open-interest')
+      expect(view.lastWindow?.pricePct).toBeGreaterThan(0)
+    }
+  })
+
+  it('retains evaluated-window diagnostics across a genuine interruption', () => {
+    const tracker = confirmedTracker()
+    const before = tracker.view(3 * duration, true)
+    tracker.view(3 * duration + 1000, false, 'Connection closed.')
+    const after = tracker.view(3 * duration + 5000, false, 'Connection closed.')
+    expect(after.confirmed).toBeNull()
+    expect(after.evaluatedWindows).toBe(before.evaluatedWindows)
+    expect(after.lastClosedAt).toBe(before.lastClosedAt)
+    expect(after.lastWindow).toEqual(before.lastWindow)
+    expect(after.reason).toBe('Connection closed.')
+  })
+
+  it('discards a window when observation processing actually pauses', () => {
+    const tracker = confirmedTracker()
+    const view = tracker.view(3 * duration + SIGNAL_RULES.maximumObservationGapMs + 1, true)
+    expect(view.confirmed).toBeNull()
+    expect(view.status).toBe('insufficient')
+    expect(view.reason).toContain('Observations paused')
+    expect(view.evaluatedWindows).toBe(3)
   })
 })
