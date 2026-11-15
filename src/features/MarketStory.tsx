@@ -37,6 +37,31 @@ function oiStateText(b: StoryBucketPoint): string {
   return 'OI snapshot missing'
 }
 
+function bucketStructureText(b: StoryBucketPoint): { text: string; tone: 'up' | 'down' | '' } {
+  if (b.isDeveloping) {
+    return { text: 'Developing (confirms on close)', tone: '' }
+  }
+  if (b.liquiditySweep === 'bullish-sweep') {
+    const lvl = b.structureLevel !== null ? ` ($${Math.round(b.structureLevel).toLocaleString('en-US')})` : ''
+    return { text: `⚡ Bullish Sweep${lvl}`, tone: 'up' }
+  }
+  if (b.liquiditySweep === 'bearish-sweep') {
+    const lvl = b.structureLevel !== null ? ` ($${Math.round(b.structureLevel).toLocaleString('en-US')})` : ''
+    return { text: `⚡ Bearish Sweep${lvl}`, tone: 'down' }
+  }
+  if (b.structureBreak) {
+    const map = {
+      'bullish-bos': { label: 'Bullish BOS', tone: 'up' as const },
+      'bearish-bos': { label: 'Bearish BOS', tone: 'down' as const },
+      'bullish-choch': { label: 'Bullish CHoCH', tone: 'up' as const },
+      'bearish-choch': { label: 'Bearish CHoCH', tone: 'down' as const },
+    }[b.structureBreak]
+    const lvl = b.structureLevel !== null ? ` ($${Math.round(b.structureLevel).toLocaleString('en-US')})` : ''
+    return { text: `${map.label}${lvl}`, tone: map.tone }
+  }
+  return { text: 'In range', tone: '' }
+}
+
 export function MarketStory({
   story,
   timeframeShort,
@@ -107,18 +132,71 @@ export function MarketStory({
           <p className="ms-subheadline">{story.subheadline}</p>
         </div>
 
-        {story.priceMax !== null && story.priceMin !== null && (
-          <div className="ms-range-pill" aria-label="Window price range">
-            <span>
-              <small>Window High</small>
-              <strong>{formatPriceUsdt(story.priceMax)}</strong>
-            </span>
-            <span>
-              <small>Window Low</small>
-              <strong>{formatPriceUsdt(story.priceMin)}</strong>
-            </span>
+        <div className="ms-header-pills">
+          <div
+            className={`ms-rsi-pill ${story.smartRsi ? `tone-${story.smartRsi.tone}` : 'is-warming'}`}
+            aria-label="Smart RSI gauge"
+            title={story.smartRsi ? story.smartRsi.summary : 'Collecting price and volume buckets to calculate Smart RSI'}
+          >
+            <div className="ms-rsi-top">
+              <small>Smart RSI</small>
+              <span className={`ms-rsi-badge ${story.smartRsi ? `zone-${story.smartRsi.zone}` : ''}`}>
+                {story.smartRsi ? story.smartRsi.shortLabel : 'Warming'}
+              </span>
+            </div>
+            <div className="ms-rsi-row">
+              <strong>{story.smartRsi ? story.smartRsi.value.toFixed(1) : '—'}</strong>
+              <div className="ms-rsi-bar" aria-hidden="true">
+                <span className="ms-rsi-zone-os" />
+                <span className="ms-rsi-zone-ob" />
+                {story.smartRsi && (
+                  <i
+                    className="ms-rsi-thumb"
+                    style={{ left: `${Math.min(Math.max(story.smartRsi.value, 2), 98)}%` }}
+                  />
+                )}
+              </div>
+            </div>
           </div>
-        )}
+
+          <div
+            className={`ms-structure-pill tone-${story.structure.tone}`}
+            aria-label="LuxAlgo market structure and liquidity sweeps"
+            title={story.structure.summary}
+          >
+            <div className="ms-rsi-top">
+              <small>Structure</small>
+              <span className={`ms-rsi-badge bias-${story.structure.bias}`}>
+                {story.structure.bias === 'bullish'
+                  ? 'Bullish'
+                  : story.structure.bias === 'bearish'
+                    ? 'Bearish'
+                    : 'Neutral'}
+              </span>
+            </div>
+            <div className="ms-structure-row">
+              <strong>{story.structure.shortLabel}</strong>
+              {story.structure.orderBlock && (
+                <small className={`ms-ob-inline ${story.structure.orderBlock.kind}`}>
+                  {story.structure.orderBlock.kind === 'bullish' ? 'Demand OB' : 'Supply OB'}
+                </small>
+              )}
+            </div>
+          </div>
+
+          {story.priceMax !== null && story.priceMin !== null && (
+            <div className="ms-range-pill" aria-label="Window price range">
+              <span>
+                <small>Window High</small>
+                <strong>{formatPriceUsdt(story.priceMax)}</strong>
+              </span>
+              <span>
+                <small>Window Low</small>
+                <strong>{formatPriceUsdt(story.priceMin)}</strong>
+              </span>
+            </div>
+          )}
+        </div>
       </div>
 
       {story.windowDivergence && (
@@ -179,6 +257,29 @@ export function MarketStory({
               </div>
               <div className="ms-lane-track ms-price-track">
                 <svg className="ms-price-svg" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+                  {story.structure.orderBlock && (
+                    <rect
+                      x={Math.max(0, xForIndex(story.structure.orderBlock.bucketIndex) - 3)}
+                      y={Math.min(story.structure.orderBlock.topY, story.structure.orderBlock.bottomY)}
+                      width={Math.min(100, 103 - xForIndex(story.structure.orderBlock.bucketIndex))}
+                      height={Math.max(4, Math.abs(story.structure.orderBlock.bottomY - story.structure.orderBlock.topY))}
+                      className={`ms-ob-zone ${story.structure.orderBlock.kind}`}
+                    />
+                  )}
+                  {story.structure.lastEventLevelY !== null && story.structure.lastEventBucketIndex !== null && (
+                    <line
+                      x1={Math.max(0, xForIndex(story.structure.lastEventBucketIndex) - 8)}
+                      y1={story.structure.lastEventLevelY}
+                      x2="100"
+                      y2={story.structure.lastEventLevelY}
+                      className={`ms-structure-line ${
+                        story.structure.lastEvent === 'bullish-bos' || story.structure.lastEvent === 'bullish-choch'
+                          ? 'bullish'
+                          : 'bearish'
+                      }`}
+                      strokeDasharray="1.5 1.5"
+                    />
+                  )}
                   {story.vwapY !== null && (
                     <line
                       x1="0"
@@ -191,6 +292,19 @@ export function MarketStory({
                   )}
                   {pricePoints.length >= 2 && <polyline points={polylinePoints} className="ms-price-line" />}
                 </svg>
+                {story.structure.orderBlock && (
+                  <span
+                    className={`ms-ob-tag ${story.structure.orderBlock.kind}`}
+                    style={{
+                      top: `${Math.min(
+                        Math.max((story.structure.orderBlock.topY + story.structure.orderBlock.bottomY) / 2, 14),
+                        86,
+                      )}%`,
+                    }}
+                  >
+                    {story.structure.orderBlock.label}
+                  </span>
+                )}
                 {story.vwap !== null && story.vwapY !== null && (
                   <span className="ms-vwap-tag" style={{ top: `${Math.min(Math.max(story.vwapY, 12), 84)}%` }}>
                     6h VWAP {formatPriceUsdt(story.vwap)}
@@ -211,7 +325,7 @@ export function MarketStory({
                       >
                         {b.priceY !== null && (
                           <span
-                            className={`ms-price-node tone-${b.phaseTone} ${b.divergence ? 'has-divergence' : ''} ${b.absorption ? 'has-absorption' : ''}`}
+                            className={`ms-price-node tone-${b.phaseTone} ${b.divergence ? 'has-divergence' : ''} ${b.absorption ? 'has-absorption' : ''} ${b.rsiZone !== 'neutral' ? `rsi-${b.rsiZone}` : ''}`}
                             style={{ top: `${b.priceY}%` }}
                           />
                         )}
@@ -313,7 +427,37 @@ export function MarketStory({
                       onMouseEnter={() => setSelectedIdx(b.index)}
                       onClick={() => setSelectedIdx(b.index)}
                     >
-                      {b.divergence && (
+                      {b.liquiditySweep && (
+                        <span
+                          className={`ms-marker sweep ${b.liquiditySweep === 'bullish-sweep' ? 'bullish' : 'bearish'}`}
+                          title={
+                            b.liquiditySweep === 'bullish-sweep'
+                              ? 'Bullish liquidity sweep (stop hunt below low)'
+                              : 'Bearish liquidity sweep (stop hunt above high)'
+                          }
+                        >
+                          ⚡ Sweep
+                        </span>
+                      )}
+                      {!b.liquiditySweep && b.structureBreak && (
+                        <span
+                          className={`ms-marker structure ${
+                            b.structureBreak === 'bullish-bos' || b.structureBreak === 'bullish-choch'
+                              ? 'bullish'
+                              : 'bearish'
+                          }`}
+                          title={bucketStructureText(b).text}
+                        >
+                          {b.structureBreak === 'bullish-choch'
+                            ? 'CHoCH ↑'
+                            : b.structureBreak === 'bearish-choch'
+                              ? 'CHoCH ↓'
+                              : b.structureBreak === 'bullish-bos'
+                                ? 'BOS ↑'
+                                : 'BOS ↓'}
+                        </span>
+                      )}
+                      {!b.isDeveloping && !b.liquiditySweep && !b.structureBreak && b.divergence && (
                         <span
                           className={`ms-marker divergence ${b.divergence}`}
                           title={b.divergence === 'bearish' ? 'Bearish divergence (hollow rise)' : 'Bullish divergence (hollow drop)'}
@@ -321,7 +465,7 @@ export function MarketStory({
                           ◇ Div
                         </span>
                       )}
-                      {!b.divergence && b.absorption && (
+                      {!b.isDeveloping && !b.liquiditySweep && !b.structureBreak && !b.divergence && b.absorption && (
                         <span className="ms-marker absorption" title="Possible passive absorption">
                           ◈ Wall
                         </span>
@@ -334,7 +478,33 @@ export function MarketStory({
                           ϟ {formatUsdShort(b.totalLiqUsd)}
                         </span>
                       )}
-                      {!b.divergence && !b.absorption && !hasLiq && <span className="ms-marker-empty">·</span>}
+                      {!b.isDeveloping &&
+                        !b.liquiditySweep &&
+                        !b.structureBreak &&
+                        !b.divergence &&
+                        !b.absorption &&
+                        !hasLiq &&
+                        b.rsiZone !== 'neutral' &&
+                        b.rsi !== null && (
+                          <span
+                            className={`ms-marker rsi ${b.rsiZone}`}
+                            title={
+                              b.rsiZone === 'overbought'
+                                ? `Smart RSI ${b.rsi.toFixed(1)} (Overbought ≥ 70)`
+                                : `Smart RSI ${b.rsi.toFixed(1)} (Oversold ≤ 30)`
+                            }
+                          >
+                            {b.rsiZone === 'overbought' ? '▲' : '▼'} RSI {b.rsi.toFixed(0)}
+                          </span>
+                        )}
+                      {(b.isDeveloping
+                        ? !hasLiq
+                        : !b.liquiditySweep &&
+                          !b.structureBreak &&
+                          !b.divergence &&
+                          !b.absorption &&
+                          !hasLiq &&
+                          b.rsiZone === 'neutral') && <span className="ms-marker-empty">·</span>}
                     </div>
                   )
                 })}
@@ -390,6 +560,34 @@ export function MarketStory({
                     }
                   >
                     {formatSignedBtcShort(inspected.deltaBtc)}
+                  </strong>
+                </span>
+                <span>
+                  <small>Smart RSI</small>{' '}
+                  <strong
+                    className={
+                      inspected.rsiZone === 'oversold'
+                        ? 'up'
+                        : inspected.rsiZone === 'overbought'
+                          ? 'down'
+                          : ''
+                    }
+                  >
+                    {inspected.rsi !== null
+                      ? `${inspected.rsi.toFixed(1)} (${
+                          inspected.rsiZone === 'overbought'
+                            ? 'Overbought'
+                            : inspected.rsiZone === 'oversold'
+                              ? 'Oversold'
+                              : 'Balanced'
+                        })`
+                      : 'Warming'}
+                  </strong>
+                </span>
+                <span>
+                  <small>Structure</small>{' '}
+                  <strong className={bucketStructureText(inspected).tone}>
+                    {bucketStructureText(inspected).text}
                   </strong>
                 </span>
                 <span>

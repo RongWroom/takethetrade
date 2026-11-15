@@ -33,6 +33,14 @@ export type MarketSnapshot = {
   vwap: number | null
   /** Average true range of recent 15m candles, as % of price. */
   atrPct: number | null
+  /** Smart RSI (0..100) blending Wilder price RSI and volume-weighted money flow. */
+  rsi?: number | null
+  /** Latest LuxAlgo-style market structure break in the active window. */
+  structureBreak?: 'bullish-bos' | 'bearish-bos' | 'bullish-choch' | 'bearish-choch' | null
+  structureLevel?: number | null
+  /** Recent liquidity sweep (stop hunt) in the active window. */
+  liquiditySweep?: 'bullish-sweep' | 'bearish-sweep' | null
+  sweepLevel?: number | null
   /** Current funding rate as a decimal (0.0001 = 0.01%). */
   fundingRate: number | null
   /** Latest long/short account ratio. */
@@ -107,6 +115,70 @@ export function calcAtrPct(candles: readonly CandleLike[]): number | null {
   const atr = sum / (candles.length - 1)
   const last = candles[candles.length - 1].close
   return last > 0 ? (atr / last) * 100 : null
+}
+
+/**
+ * Wilder's Relative Strength Index (0..100) from a chronological series of closes.
+ * Uses adaptive smoothing when fewer than `period + 1` closes are available (minimum 4 closes).
+ */
+export function calcRsi(closes: readonly number[], period = 14): number | null {
+  const valid = closes.filter(c => Number.isFinite(c) && c > 0)
+  if (valid.length < 4) return null
+  const changes: number[] = []
+  for (let i = 1; i < valid.length; i++) {
+    changes.push(valid[i] - valid[i - 1])
+  }
+  const initLen = Math.min(period, changes.length)
+  let avgGain = 0
+  let avgLoss = 0
+  for (let i = 0; i < initLen; i++) {
+    const diff = changes[i]
+    if (diff > 0) avgGain += diff
+    else if (diff < 0) avgLoss += -diff
+  }
+  avgGain /= initLen
+  avgLoss /= initLen
+
+  for (let i = initLen; i < changes.length; i++) {
+    const diff = changes[i]
+    const gain = diff > 0 ? diff : 0
+    const loss = diff < 0 ? -diff : 0
+    avgGain = (avgGain * (period - 1) + gain) / period
+    avgLoss = (avgLoss * (period - 1) + loss) / period
+  }
+
+  if (avgGain === 0 && avgLoss === 0) return 50
+  if (avgLoss === 0) return 100
+  const rs = avgGain / avgLoss
+  return Number((100 - 100 / (1 + rs)).toFixed(1))
+}
+
+/**
+ * Volume-weighted Smart RSI (0..100) from candles, blending Wilder close RSI (70%)
+ * with Money Flow Index / volume-weighted typical-price momentum (30%).
+ */
+export function calcSmartRsiFromCandles(candles: readonly CandleLike[], period = 14): number | null {
+  const valid = candles.filter(c => Number.isFinite(c.close) && c.close > 0)
+  const priceRsi = calcRsi(valid.map(c => c.close), period)
+  if (priceRsi === null) return null
+
+  const window = valid.slice(-(period + 1))
+  let posFlow = 0
+  let negFlow = 0
+  for (let i = 1; i < window.length; i++) {
+    const curr = window[i]
+    const prev = window[i - 1]
+    if (!(curr.volumeBtc > 0)) continue
+    const tpCurr = (curr.high + curr.low + curr.close) / 3
+    const tpPrev = (prev.high + prev.low + prev.close) / 3
+    const rawMoneyFlow = tpCurr * curr.volumeBtc
+    if (tpCurr > tpPrev) posFlow += rawMoneyFlow
+    else if (tpCurr < tpPrev) negFlow += rawMoneyFlow
+  }
+
+  if (posFlow === 0 && negFlow === 0) return priceRsi
+  const mfi = negFlow === 0 ? 100 : 100 - 100 / (1 + posFlow / negFlow)
+  return Number((priceRsi * 0.7 + mfi * 0.3).toFixed(1))
 }
 
 /**
@@ -316,6 +388,144 @@ function checkLocation(side: TradeSide, s: MarketSnapshot, ref: number | null, m
     headline: `${where} close to the average price.`,
     explanation: 'Neither chasing nor getting a bargain. Price is near where most volume traded over the last 6 hours.',
     evidence,
+  }
+}
+
+function checkSmartRsi(side: TradeSide, s: MarketSnapshot): TradeCheckItem {
+  const title = 'Overbought / oversold (Smart RSI)'
+  if (s.rsi === null || s.rsi === undefined || !Number.isFinite(s.rsi)) return unknown('rsi', title, 'recent candles')
+  const rsiText = `Smart RSI ${s.rsi.toFixed(1)}`
+  const flowText = s.deltaBtc !== null ? ` · Delta ${btc(s.deltaBtc)} (${s.timeframeLabel})` : ''
+  const evidence = `${rsiText} (overbought ≥ 70 · oversold ≤ 30)${flowText}`
+
+  if (s.rsi >= 70) {
+    const flowStalling = s.deltaBtc !== null && s.deltaBtc <= 0
+    if (flowStalling) {
+      const againstLong = side === 'long'
+      return {
+        id: 'rsi',
+        status: againstLong ? 'against' : 'good',
+        title,
+        headline: againstLong
+          ? `Overbought (${s.rsi.toFixed(0)}) and buyer flow is stalling — high pullback risk.`
+          : `Overbought (${s.rsi.toFixed(0)}) while buyer flow stalls — exhaustion favours your short.`,
+        explanation:
+          'Smart RSI is above 70 (overbought) and aggressive market buying has dried up. Stretched rallies without fresh buyer support frequently snap back.',
+        evidence,
+      }
+    }
+    return {
+      id: 'rsi',
+      status: side === 'long' ? 'caution' : 'caution',
+      title,
+      headline:
+        side === 'long'
+          ? `Momentum is overbought (${s.rsi.toFixed(0)}), though buyers are still pushing.`
+          : `Price is overbought (${s.rsi.toFixed(0)}), but buyers are still aggressive — watch for a squeeze.`,
+      explanation:
+        side === 'long'
+          ? 'Smart RSI is above 70. Aggressive buyers are still active, so the trend is hot, but entering a new long here means buying into stretched momentum.'
+          : 'Smart RSI is above 70, which signals stretched upward momentum, but market buyers have not slowed down yet.',
+      evidence,
+    }
+  }
+
+  if (s.rsi <= 30) {
+    const buyersSteppingIn = s.deltaBtc !== null && s.deltaBtc >= 0
+    if (buyersSteppingIn) {
+      const helpsLong = side === 'long'
+      return {
+        id: 'rsi',
+        status: helpsLong ? 'good' : 'against',
+        title,
+        headline: helpsLong
+          ? `Oversold (${s.rsi.toFixed(0)}) while buyers step in — selling looks exhausted.`
+          : `Oversold (${s.rsi.toFixed(0)}) and buyers are stepping in — high bounce risk against your short.`,
+        explanation:
+          'Smart RSI is below 30 (oversold) and market buyers are absorbing the drop. Stretched sell-offs with positive order flow often rebound.',
+        evidence,
+      }
+    }
+    return {
+      id: 'rsi',
+      status: 'caution',
+      title,
+      headline:
+        side === 'long'
+          ? `Price is oversold (${s.rsi.toFixed(0)}), but sellers are still pressing hard.`
+          : `Momentum is oversold (${s.rsi.toFixed(0)}), though sellers are still pressing.`,
+      explanation:
+        side === 'long'
+          ? 'Smart RSI is below 30, meaning the drop is stretched, but aggressive market selling has not slowed down yet.'
+          : 'Smart RSI is below 30. Sellers are still in control, but entering a fresh short here means selling after a stretched drop.',
+      evidence,
+    }
+  }
+
+  return {
+    id: 'rsi',
+    status: 'neutral',
+    title,
+    headline: `Smart RSI is balanced (${s.rsi.toFixed(0)}) — neither overbought nor oversold.`,
+    explanation: 'Momentum sits inside the normal 30–70 range, so price is not stretched to an exhaustion extreme either way.',
+    evidence,
+  }
+}
+
+function checkStructure(side: TradeSide, s: MarketSnapshot): TradeCheckItem {
+  const title = 'Market structure & sweeps'
+  if (s.price === null && !s.structureBreak && !s.liquiditySweep) {
+    return unknown('structure', title, 'recent price structure')
+  }
+
+  if (s.liquiditySweep === 'bullish-sweep' || s.liquiditySweep === 'bearish-sweep') {
+    const isBullSweep = s.liquiditySweep === 'bullish-sweep'
+    const helpsYou = (isBullSweep && side === 'long') || (!isBullSweep && side === 'short')
+    const lvl = s.sweepLevel !== null && s.sweepLevel !== undefined ? ` at ${usd(s.sweepLevel)}` : ''
+    return {
+      id: 'structure',
+      status: helpsYou ? 'good' : 'against',
+      title,
+      headline: isBullSweep
+        ? helpsYou
+          ? `Stop hunt below recent low${lvl} snapped back up — supports your long.`
+          : `Price swept below recent low${lvl} and snapped back up — bear trap risk.`
+        : helpsYou
+          ? `Stop hunt above recent high${lvl} rejected back down — supports your short.`
+          : `Price swept above recent high${lvl} and rejected back down — bull trap risk.`,
+      explanation:
+        'A liquidity sweep (stop hunt) occurs when price wicks past a swing high or low to trigger stops and breakout orders, then closes back inside the range.',
+      evidence: `${isBullSweep ? 'Bullish' : 'Bearish'} liquidity sweep${lvl} (${s.timeframeLabel})`,
+    }
+  }
+
+  if (s.structureBreak) {
+    const isBull = s.structureBreak === 'bullish-bos' || s.structureBreak === 'bullish-choch'
+    const isChoch = s.structureBreak === 'bullish-choch' || s.structureBreak === 'bearish-choch'
+    const withYou = (isBull && side === 'long') || (!isBull && side === 'short')
+    const tag = `${isBull ? 'Bullish' : 'Bearish'} ${isChoch ? 'CHoCH' : 'BOS'}`
+    const lvl = s.structureLevel !== null && s.structureLevel !== undefined ? ` at ${usd(s.structureLevel)}` : ''
+    return {
+      id: 'structure',
+      status: withYou ? 'good' : isChoch ? 'against' : 'caution',
+      title,
+      headline: withYou
+        ? `${tag}${lvl} — structure broke in the direction of your ${side}.`
+        : `${tag}${lvl} — structure broke against your ${side}.`,
+      explanation: isChoch
+        ? 'Change of Character (CHoCH) means price closed past the prior counter-trend swing level, signaling a potential trend shift.'
+        : 'Break of Structure (BOS) means price closed past the prior swing level in the direction of the prevailing trend.',
+      evidence: `${tag}${lvl} (${s.timeframeLabel})`,
+    }
+  }
+
+  return {
+    id: 'structure',
+    status: 'neutral',
+    title,
+    headline: 'Price is trading inside its recent swing range — no sweep or break.',
+    explanation: 'Neither a Break of Structure (BOS), Change of Character (CHoCH), nor a liquidity sweep has triggered in this window.',
+    evidence: `Structure: in range (${s.timeframeLabel})`,
   }
 }
 
@@ -555,6 +765,8 @@ export function evaluateTradeCheck(intent: TradeIntent, s: MarketSnapshot): Trad
     checkAbsorption(side, s),
     checkRegime(side, s),
     checkLocation(side, s, ref, mode),
+    checkSmartRsi(side, s),
+    checkStructure(side, s),
     checkCrowding(side, s),
     checkTrend(side, s),
     checkLiquidations(side, s),

@@ -324,6 +324,173 @@ h2 {
   line-height: 1.5;
   color: #a9bac9;
 }
+.ms-header-pills {
+  display: flex;
+  align-items: stretch;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.ms-rsi-pill {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 178px;
+  background: #0d161f;
+  border: 1px solid #243545;
+  border-radius: 12px;
+  padding: 9px 13px;
+  font-variant-numeric: tabular-nums;
+}
+.ms-rsi-pill.tone-rose {
+  border-color: #5d3643;
+}
+.ms-rsi-pill.tone-teal {
+  border-color: #2d594c;
+}
+.ms-rsi-pill.tone-amber {
+  border-color: #614e2e;
+}
+.ms-rsi-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.ms-rsi-top small {
+  font-size: 10px;
+  color: #8294a5;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.ms-rsi-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #172533;
+  color: #b7c8d8;
+  white-space: nowrap;
+}
+.ms-rsi-badge.zone-overbought {
+  background: #362029;
+  color: #f2adc0;
+}
+.ms-rsi-badge.zone-oversold {
+  background: #153029;
+  color: #7fe0be;
+}
+.ms-rsi-badge.zone-bullish {
+  background: #142a25;
+  color: #67d1ad;
+}
+.ms-rsi-badge.zone-bearish {
+  background: #2b1b22;
+  color: #e9a4b3;
+}
+.ms-rsi-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.ms-rsi-row strong {
+  font-size: 14px;
+  color: #eaf2f8;
+  min-width: 32px;
+}
+.ms-rsi-bar {
+  position: relative;
+  flex: 1;
+  height: 6px;
+  border-radius: 999px;
+  background: #182635;
+  overflow: visible;
+}
+.ms-rsi-zone-os {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 30%;
+  border-radius: 999px 0 0 999px;
+  background: #67d1ad38;
+  border-right: 1px dashed #67d1ad88;
+}
+.ms-rsi-zone-ob {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 30%;
+  border-radius: 0 999px 999px 0;
+  background: #e9a4b338;
+  border-left: 1px dashed #e9a4b388;
+}
+.ms-rsi-thumb {
+  position: absolute;
+  top: 50%;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #f0f5f9;
+  border: 1.5px solid #0d161f;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 0 0 2px #ffffff24;
+}
+.ms-structure-pill {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 158px;
+  background: #0d161f;
+  border: 1px solid #243545;
+  border-radius: 12px;
+  padding: 9px 13px;
+}
+.ms-structure-pill.tone-teal {
+  border-color: #2d594c;
+}
+.ms-structure-pill.tone-rose {
+  border-color: #5d3643;
+}
+.ms-structure-pill.tone-amber {
+  border-color: #614e2e;
+}
+.ms-rsi-badge.bias-bullish {
+  background: #142a25;
+  color: #67d1ad;
+}
+.ms-rsi-badge.bias-bearish {
+  background: #2b1b22;
+  color: #e9a4b3;
+}
+.ms-structure-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.ms-structure-row strong {
+  font-size: 13px;
+  color: #eaf2f8;
+  white-space: nowrap;
+}
+.ms-ob-inline {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.ms-ob-inline.bullish {
+  background: #142c26;
+  color: #7fe0be;
+}
+.ms-ob-inline.bearish {
+  background: #311d25;
+  color: #f0a8b8;
+}
 .ms-range-pill {
   display: flex;
   gap: 14px;
@@ -530,6 +697,47 @@ h2 {
   stroke-width: 0.9;
   opacity: 0.65;
 }
+.ms-ob-zone.bullish {
+  fill: #67d1ad1f;
+  stroke: #67d1ad55;
+  stroke-width: 0.5;
+}
+.ms-ob-zone.bearish {
+  fill: #e9a4b31f;
+  stroke: #e9a4b355;
+  stroke-width: 0.5;
+}
+.ms-structure-line.bullish {
+  stroke: #67d1ad;
+  stroke-width: 0.85;
+  opacity: 0.75;
+}
+.ms-structure-line.bearish {
+  stroke: #e9a4b3;
+  stroke-width: 0.85;
+  opacity: 0.75;
+}
+.ms-ob-tag {
+  position: absolute;
+  left: 6px;
+  transform: translateY(-50%);
+  font-size: 9px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  pointer-events: none;
+  z-index: 2;
+}
+.ms-ob-tag.bullish {
+  background: #0f241fd9;
+  border: 1px solid #2d5c4d;
+  color: #7fe0be;
+}
+.ms-ob-tag.bearish {
+  background: #28171ed9;
+  border: 1px solid #5d3643;
+  color: #f0a8b8;
+}
 .ms-price-line {
   fill: none;
   stroke: var(--story-accent);
@@ -597,6 +805,12 @@ h2 {
   height: 9px;
   background: #e4c27d;
   box-shadow: 0 0 0 2px #e4c27d44;
+}
+.ms-price-node.rsi-overbought {
+  box-shadow: 0 0 0 2.5px #e9a4b366;
+}
+.ms-price-node.rsi-oversold {
+  box-shadow: 0 0 0 2.5px #67d1ad66;
 }
 .ms-pressure-track {
   height: 58px;
@@ -742,6 +956,36 @@ h2 {
 .ms-marker.liq.short {
   background: #153029;
   color: #7fe0be;
+}
+.ms-marker.rsi.overbought {
+  background: #331e27;
+  color: #f0a8b8;
+  border: 1px solid #5e3545;
+}
+.ms-marker.rsi.oversold {
+  background: #142d26;
+  color: #7fe0be;
+  border: 1px solid #2e5d4e;
+}
+.ms-marker.sweep.bullish {
+  background: #14322a;
+  color: #84e6c4;
+  border: 1px solid #35705e;
+}
+.ms-marker.sweep.bearish {
+  background: #381e28;
+  color: #f5b0c0;
+  border: 1px solid #6e394b;
+}
+.ms-marker.structure.bullish {
+  background: #162e28;
+  color: #67d1ad;
+  border: 1px solid #2d5c4d;
+}
+.ms-marker.structure.bearish {
+  background: #301d25;
+  color: #e9a4b3;
+  border: 1px solid #5d3643;
 }
 .ms-marker-empty {
   color: #465869;

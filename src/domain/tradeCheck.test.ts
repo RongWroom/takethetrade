@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   approxLiquidationPrice,
   calcAtrPct,
+  calcRsi,
+  calcSmartRsiFromCandles,
   calcVwap,
   evaluateTradeCheck,
   validateIntent,
@@ -58,6 +60,21 @@ describe('helpers', () => {
   it('approximates isolated liquidation prices symmetrically', () => {
     expect(approxLiquidationPrice('long', 100_000, 10)).toBeCloseTo(90_400)
     expect(approxLiquidationPrice('short', 100_000, 10)).toBeCloseTo(109_600)
+  })
+
+  it('computes Wilder RSI and volume-weighted Smart RSI from candles', () => {
+    expect(calcRsi([100, 101, 102])).toBeNull()
+    expect(calcRsi([100, 102, 104, 106, 108])).toBe(100)
+    expect(calcRsi([108, 106, 104, 102, 100])).toBe(0)
+    const mixed = calcSmartRsiFromCandles([
+      { high: 101, low: 99, close: 100, volumeBtc: 10 },
+      { high: 103, low: 100, close: 102, volumeBtc: 20 },
+      { high: 102, low: 99, close: 101, volumeBtc: 8 },
+      { high: 105, low: 101, close: 104, volumeBtc: 25 },
+      { high: 107, low: 103, close: 106, volumeBtc: 30 },
+    ])
+    expect(mixed).not.toBeNull()
+    expect(mixed!).toBeGreaterThan(70)
   })
 })
 
@@ -212,5 +229,36 @@ describe('evaluateTradeCheck', () => {
     expect(r.checks[0].status).toBe('against')
     expect(r.summary.against).toBeGreaterThan(0)
     expect(r.summary.headline).toMatch(/in your favour/)
+  })
+
+  it('evaluates Smart RSI overbought and oversold states with taker flow confirmation', () => {
+    const obExhaust = snap({ rsi: 76, deltaBtc: -5 })
+    expect(find(evaluateTradeCheck({ side: 'long' }, obExhaust).checks, 'rsi').status).toBe('against')
+    expect(find(evaluateTradeCheck({ side: 'short' }, obExhaust).checks, 'rsi').status).toBe('good')
+
+    const obStrong = snap({ rsi: 76, deltaBtc: 12 })
+    expect(find(evaluateTradeCheck({ side: 'long' }, obStrong).checks, 'rsi').status).toBe('caution')
+    expect(find(evaluateTradeCheck({ side: 'short' }, obStrong).checks, 'rsi').status).toBe('caution')
+
+    const osAbsorb = snap({ rsi: 24, deltaBtc: 8 })
+    expect(find(evaluateTradeCheck({ side: 'long' }, osAbsorb).checks, 'rsi').status).toBe('good')
+    expect(find(evaluateTradeCheck({ side: 'short' }, osAbsorb).checks, 'rsi').status).toBe('against')
+
+    const neutralRsi = snap({ rsi: 52 })
+    expect(find(evaluateTradeCheck({ side: 'long' }, neutralRsi).checks, 'rsi').status).toBe('neutral')
+  })
+
+  it('evaluates market structure breaks (BOS / CHoCH) and liquidity sweeps for each side', () => {
+    const bullSweep = snap({ liquiditySweep: 'bullish-sweep', sweepLevel: 79_800 })
+    expect(find(evaluateTradeCheck({ side: 'long' }, bullSweep).checks, 'structure').status).toBe('good')
+    expect(find(evaluateTradeCheck({ side: 'short' }, bullSweep).checks, 'structure').status).toBe('against')
+
+    const bearChoch = snap({ structureBreak: 'bearish-choch', structureLevel: 80_100 })
+    expect(find(evaluateTradeCheck({ side: 'short' }, bearChoch).checks, 'structure').status).toBe('good')
+    expect(find(evaluateTradeCheck({ side: 'long' }, bearChoch).checks, 'structure').status).toBe('against')
+
+    const bullBos = snap({ structureBreak: 'bullish-bos', structureLevel: 80_250 })
+    expect(find(evaluateTradeCheck({ side: 'long' }, bullBos).checks, 'structure').status).toBe('good')
+    expect(find(evaluateTradeCheck({ side: 'short' }, bullBos).checks, 'structure').status).toBe('caution')
   })
 })

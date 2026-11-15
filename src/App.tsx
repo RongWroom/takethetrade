@@ -559,9 +559,11 @@ function App() {
                 <p>⚡ <strong>EVENTS</strong> — reported liquidations and signals pinned to the exact moment they happened.</p>
               </div>
               <div className="detail-box">
-                <strong>🟡 Warnings to watch</strong>
+                <strong>🟡 Warnings, Structure &amp; Smart RSI</strong>
                 <p>◇ <strong>Divergence</strong> — price goes one way while real order flow goes the other. "Hollow rise" = price up but sellers secretly winning. "Hollow drop" = price down but buyers stepping in. These moves can be fragile.</p>
-                <p>◈ <strong>Possible absorption</strong> — one side pushes hard but price won't move; a large passive trader may be soaking it up.</p>
+                <p>◈ <strong>Possible absorption &amp; Order Blocks (OB)</strong> — one side pushes hard but price won't move; shaded Demand/Supply OB zones mark where passive liquidity stepped in.</p>
+                <p>⚡ <strong>Structure (BOS / CHoCH) &amp; Sweeps</strong> — <em>BOS</em> confirms trend continuation past a swing high/low; <em>CHoCH</em> flags an early character shift against the prior trend; <em>⚡ Sweep</em> spots stop-hunts that wick past a level and snap back inside.</p>
+                <p>🧭 <strong>Smart RSI</strong> — blends price RSI (70%) with volume-weighted money flow (30%) and checks live taker delta. Above 70 is <em>Overbought</em> (especially risky if buyer flow stalls); below 30 is <em>Oversold</em> (potential bounce if buyers step in).</p>
               </div>
               <div className="detail-box">
                 <strong>🧩 Chapters, cards &amp; pulse</strong>

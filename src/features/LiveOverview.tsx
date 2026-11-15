@@ -27,7 +27,7 @@ import {
   type Trade,
 } from '../domain/tradeEngine'
 import { evaluateMarketStory, type MarketStoryEvaluation, type RawStoryBucketInput } from '../domain/marketStory'
-import { calcAtrPct, calcVwap, type MarketSnapshot } from '../domain/tradeCheck'
+import { calcAtrPct, calcSmartRsiFromCandles, calcVwap, type MarketSnapshot } from '../domain/tradeCheck'
 import {
   LIQUIDATION_LARGE_USD,
   SIGNAL_RULES,
@@ -111,12 +111,13 @@ const emptyOiRegime = evaluateOiRegime({
 type TradeContext = {
   vwap: number | null
   atrPct: number | null
+  rsi: number | null
   trendPct: number | null
   lsRatio: number | null
   lsRatioAvg: number | null
 }
 
-const emptyContext: TradeContext = { vwap: null, atrPct: null, trendPct: null, lsRatio: null, lsRatioAvg: null }
+const emptyContext: TradeContext = { vwap: null, atrPct: null, rsi: null, trendPct: null, lsRatio: null, lsRatioAvg: null }
 
 const emptySnapshot = (timeframeLabel: string): MarketSnapshot => ({
   price: null,
@@ -127,6 +128,7 @@ const emptySnapshot = (timeframeLabel: string): MarketSnapshot => ({
   oiRegimeId: null,
   vwap: null,
   atrPct: null,
+  rsi: null,
   fundingRate: null,
   lsRatio: null,
   lsRatioAvg: null,
@@ -156,6 +158,7 @@ async function fetchTradeContext(signal: AbortSignal): Promise<{ context: TradeC
     context: {
       vwap: calcVwap(c15),
       atrPct: calcAtrPct(c15),
+      rsi: calcSmartRsiFromCandles(c15),
       trendPct: c1h.length >= 2 ? ((c1h[c1h.length - 1].close - c1h[0].close) / c1h[0].close) * 100 : null,
       lsRatio: lsPts.length > 0 ? lsPts[lsPts.length - 1].ratio : null,
       lsRatioAvg: prior.length > 0 ? prior.reduce((sum, p) => sum + p.ratio, 0) / prior.length : null,
@@ -723,6 +726,28 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
       const confirmation = tracker.view(now, effectiveStatus === 'Connected' && !oiStale, healthReason)
       const oiRegime = confirmation.confirmed ?? emptyOiRegime
 
+      const liveStoryBuckets = buildLiveStoryBuckets({
+        now,
+        bucketMs,
+        replayedBuckets,
+        trades,
+        oiHistory,
+        liquidations,
+        cached,
+        lastPriceNum: priceEndNum,
+      })
+      const firstStoryStart = liveStoryBuckets[0]?.start ?? Math.floor(now / bucketMs) * bucketMs
+      const priorCloses = cached?.candles
+        ? cached.candles.filter(c => c.time < firstStoryStart).map(c => c.close)
+        : []
+
+      const story = evaluateMarketStory({
+        buckets: liveStoryBuckets,
+        priorCloses,
+        vwap: context.vwap,
+        timeframeLabel: tf.label,
+      })
+
       const recentLiqs = liquidations.filter(l => l.time >= now - 15 * minute && l.time <= now)
       const snapshot: MarketSnapshot = {
         price: priceEndNum,
@@ -734,6 +759,11 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
         oiRegimeId: confirmation.confirmed?.activeRowId ?? null,
         vwap: context.vwap,
         atrPct: context.atrPct,
+        rsi: story.smartRsi?.value ?? context.rsi,
+        structureBreak: story.structure.lastEvent,
+        structureLevel: story.structure.lastEventLevel,
+        liquiditySweep: story.structure.recentSweep?.kind ?? null,
+        sweepLevel: story.structure.recentSweep?.level ?? null,
         fundingRate,
         lsRatio: context.lsRatio,
         lsRatioAvg: context.lsRatioAvg,
@@ -749,21 +779,6 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
           : priceEndNum !== null
             ? formatPrice(String(priceEndNum))
             : null
-
-      const story = evaluateMarketStory({
-        buckets: buildLiveStoryBuckets({
-          now,
-          bucketMs,
-          replayedBuckets,
-          trades,
-          oiHistory,
-          liquidations,
-          cached,
-          lastPriceNum: priceEndNum,
-        }),
-        vwap: context.vwap,
-        timeframeLabel: tf.label,
-      })
 
       setState({
         status: effectiveStatus,
@@ -979,7 +994,6 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
     const tf = getTimeframeOption(timeframeId)
     tfRef.current = tf
     publishRef.current?.()
-    if (timeframeId === '1m') return
     if (backfillRef.current[timeframeId]) {
       publishRef.current?.()
       return
@@ -989,7 +1003,7 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
     const fetchBackfill = async () => {
       try {
         const candleReq = fetch(
-          `https://www.okx.com/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=${tf.candleBar}&limit=12`,
+          `https://www.okx.com/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=${tf.candleBar}&limit=26`,
           { signal: controller.signal },
         ).then(r => (r.ok ? r.json() : null))
 
