@@ -8,6 +8,8 @@ import { MarketStory } from './features/MarketStory'
 import { MyTradePanel } from './features/MyTradePanel'
 import { useConfirmationPreference } from './features/useConfirmationPreference'
 import { useTradeCheck } from './features/useTradeCheck'
+import { useTradeJournal } from './features/useTradeJournal'
+import { buildPageDataSnapshot } from './domain/tradeJournal'
 import type { Metric } from './fixtures/demo'
 
 type Panel = Metric['id'] | 'pulse' | 'events' | 'settings' | 'guide' | null
@@ -75,6 +77,7 @@ function App() {
   const live = useLiveMarketData(timeframe, confirmationMode)
   const [tradeOpen, setTradeOpen] = useState(false)
   const trade = useTradeCheck(live.snapshot)
+  const journal = useTradeJournal()
 
   const activeMetric = typeof panel === 'string' ? live.metrics.find(m => m.id === panel) ?? null : null
   const visibleEvents = live.events.filter(ev => !dismissedIds.includes(ev.id))
@@ -83,6 +86,30 @@ function App() {
   const confirmationInfo = describeConfirmation(live.confirmation)
   const observed = live.confirmation.observed
   const regimeBadge = live.confirmation.status === 'confirmed' ? 'CONFIRMED' : 'LAST CONFIRMED'
+
+  const captureCurrentSnapshot = () =>
+    buildPageDataSnapshot({
+      status: live.status,
+      priceFormatted: live.price,
+      timeframe: live.timeframe,
+      timeframeLabel: live.timeframeLabel,
+      gap: live.gap,
+      oiStale: live.oiStale,
+      confirmationMode,
+      confirmationStatus: confirmationInfo.status,
+      confirmationProgress: confirmationInfo.progress,
+      confirmationDetail: confirmationInfo.detail,
+      confirmationReason: confirmationInfo.reason,
+      metrics: live.metrics,
+      pulse: live.pulse,
+      oiRegime: live.oiRegime,
+      story: live.story,
+      snapshot: live.snapshot,
+      confirmation: live.confirmation,
+      events: visibleEvents,
+      draft: trade.draft,
+      tradeResult: trade.result,
+    })
 
   const toggleFlip = (id: string) => {
     setFlippedCards(prev => ({ ...prev, [id]: !prev[id] }))
@@ -641,6 +668,8 @@ function App() {
         livePrice={live.snapshot.price}
         timeframeLabel={live.timeframeLabel}
         confirmationLabel={`${confirmationInfo.status}, ${confirmationMode} confirmation. ${confirmationInfo.progress}`}
+        captureSnapshot={captureCurrentSnapshot}
+        journal={journal}
       />
     </div>
   )

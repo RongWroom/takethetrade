@@ -357,3 +357,42 @@ test('Market Story visual displays chapter progression and flags order-flow dive
   await page.keyboard.press('Escape')
 })
 
+test('My Trade Snapshot & Journal logs page state, computes PnL on exit, and persists across reload', async ({ page }) => {
+  await page.routeWebSocket('wss://ws.okx.com/ws/v5/public', ws => {
+    ws.onMessage(() => {
+      ws.send(JSON.stringify({ event: 'subscribe' }))
+      ws.send(
+        JSON.stringify({
+          arg: { channel: 'trades' },
+          data: [{ instId: 'BTC-USDT-SWAP', tradeId: 'j-1', side: 'buy', sz: '200', ts: String(Date.now()), px: '80000' }],
+        }),
+      )
+    })
+  })
+  await page.goto('/')
+  await expect(page.getByText('$80,000.00')).toBeVisible({ timeout: 10000 })
+
+  await page.getByRole('button', { name: 'My Trade' }).click()
+  const drawer = page.getByRole('dialog', { name: 'My Trade' })
+  await drawer.getByRole('button', { name: /Long/ }).click()
+  await drawer.getByRole('button', { name: /Add entry/ }).click()
+  await drawer.getByLabel(/Entry price/).fill('80000')
+  await drawer.getByLabel(/^Leverage/).fill('10')
+
+  await drawer.getByRole('button', { name: '+ Log Trade Snapshot' }).click()
+  await expect(drawer.getByText(/Logged snapshot at/)).toBeVisible()
+  await expect(drawer.getByText('▲ BUY / UP')).toBeVisible()
+
+  await drawer.getByRole('button', { name: 'Win', exact: true }).click()
+  await drawer.getByLabel('Exit price').fill('80800')
+  await drawer.getByLabel('Trade note').fill('BOS breakout with positive delta')
+  await expect(drawer.getByText('+1.00% (+10.0% @ 10x)')).toBeVisible()
+  await expect(drawer.getByText(/100% win rate/)).toBeVisible()
+
+  await page.reload()
+  await page.getByRole('button', { name: /My Trade/ }).click()
+  await expect(drawer.getByLabel('Trade note')).toHaveValue('BOS breakout with positive delta')
+  await expect(drawer.getByText('+1.00% (+10.0% @ 10x)')).toBeVisible()
+})
+
+
