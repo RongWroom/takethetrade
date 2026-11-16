@@ -26,7 +26,7 @@ export function describeConfirmation(view: ConfirmationView): { status: string; 
           ? `Mixed: ${completed} of ${required} matching ${mode} closes. No confirmed direction.`
           : `${completed} of ${required} matching ${mode} closes.`
   const windowText = lastWindow
-    ? `Last ${mode} window ${utcTime(lastWindow.start)}–${utcTime(lastWindow.end)}: price ${signedPct(lastWindow.pricePct)}, OI ${signedPct(lastWindow.oiPct)}, volume ${lastWindow.volumeChangePct === null ? 'baseline unavailable (strong labels wait for a prior full window)' : signedPct(lastWindow.volumeChangePct)}.`
+    ? `Last ${mode} window ${utcTime(lastWindow.start)}–${utcTime(lastWindow.end)}: price ${signedPct(lastWindow.pricePct)}, OI ${signedPct(lastWindow.oiPct)}, volume ${lastWindow.volumeChangePct === null ? 'baseline established on this window' : signedPct(lastWindow.volumeChangePct)}.`
     : `No ${mode} window has closed yet.`
   const detail = `Valid windows ${evaluatedWindows} · rejected ${rejectedWindows}. ${windowText} Next close ${utcTime(nextCloseAt)}.`
   return { status: STATUS_LABEL[status], progress, detail, reason }

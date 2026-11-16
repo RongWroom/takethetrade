@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { SignalConfirmation, SIGNAL_RULES } from './signalConfirmation'
+import { buildConfirmationSeeds } from '../features/LiveOverview'
 
 const duration = 300_000
 type Options = { pricePct?: number; oiPct?: number; quantity?: string; omitOiAt?: number; duplicate?: boolean }
@@ -31,20 +32,23 @@ function confirmedTracker() {
 }
 
 describe('closed-window signal confirmation', () => {
-  it('uses a volume baseline then two distinct completed windows, never refresh counts', () => {
+  it('identifies a 1/2 candidate on the first close and confirms on the second distinct completed window', () => {
     const tracker = new SignalConfirmation('5m', 0)
-    expect(fillWindow(tracker, 0).completed).toBe(0)
-    const first = fillWindow(tracker, duration, { quantity: '1.2' })
+    const first = fillWindow(tracker, 0, { quantity: '1.2' })
     expect(first.completed).toBe(1)
+    expect(first.status).toBe('pending')
+    expect(first.candidate).toBe('strong-uptrend')
+    expect(first.observed?.activeRowId).toBe('strong-uptrend')
     expect(first.confirmed).toBeNull()
-    for (let i = 1; i <= 5; i++) expect(tracker.view(2 * duration + i * 1000, true).completed).toBe(1)
-    const second = fillWindow(tracker, 2 * duration, { quantity: '1.44' })
+    for (let i = 1; i <= 5; i++) expect(tracker.view(duration + i * 1000, true).completed).toBe(1)
+    const second = fillWindow(tracker, duration, { quantity: '1.44' })
     expect(second.completed).toBe(2)
+    expect(second.status).toBe('confirmed')
     expect(second.confirmed?.activeRowId).toBe('strong-uptrend')
     expect(second.snapshot.deltaBtc).toBeCloseTo(43.2)
     expect(second.snapshot.cvdBtc).toBeCloseTo(43.2)
-    expect(second.snapshot.priceEnd).toBeCloseTo(80_000 * 1.001 ** 3)
-    expect(second.lastClosedAt).toBe(3 * duration)
+    expect(second.snapshot.priceEnd).toBeCloseTo(80_000 * 1.001 ** 2)
+    expect(second.lastClosedAt).toBe(2 * duration)
   })
 
   it('does not count the partial window on page load', () => {
@@ -52,8 +56,8 @@ describe('closed-window signal confirmation', () => {
     tracker.openInterest({ time: 10_000, btc: 30_000 }, 10_000)
     tracker.trade({ id: 'partial', time: 10_000, price: 80_000, quantityBtc: '100', side: 'buy' }, 10_000)
     expect(tracker.view(duration, true).lastClosedAt).toBeNull()
-    expect(fillWindow(tracker, duration).completed).toBe(0)
-    expect(fillWindow(tracker, 2 * duration, { quantity: '1.2' }).completed).toBe(1)
+    expect(fillWindow(tracker, duration).completed).toBe(1)
+    expect(fillWindow(tracker, 2 * duration, { quantity: '1.2' }).completed).toBe(2)
   })
 
   it('holds one opposing close, confirms two, and uses matching pulse and snapshot', () => {
@@ -78,27 +82,36 @@ describe('closed-window signal confirmation', () => {
     expect(second.pulse.ruleId).toBe('confirmed-mixed')
   })
 
-  it('filters price and OI noise and requires increasing volume for strong regimes', () => {
-    for (const options of [{ pricePct: 0.049 }, { oiPct: 0.049 }, { quantity: '1' }]) {
+  it('classifies strong regimes from price + OI even when volume does not jump, while filtering sub-threshold noise', () => {
+    for (const options of [{ pricePct: 0.005 }, { oiPct: 0.004 }]) {
       const tracker = new SignalConfirmation('5m', 0)
-      fillWindow(tracker, 0)
-      expect(fillWindow(tracker, duration, options).candidate).toBeNull()
-      expect(fillWindow(tracker, 2 * duration, options).confirmed).toBeNull()
+      expect(fillWindow(tracker, 0, options).candidate).toBeNull()
+      expect(fillWindow(tracker, duration, options).confirmed).toBeNull()
     }
+    const steadyVolumeTracker = new SignalConfirmation('5m', 0)
+    expect(fillWindow(steadyVolumeTracker, 0, { quantity: '1' }).candidate).toBe('strong-uptrend')
+    const confirmedSteady = fillWindow(steadyVolumeTracker, duration, { quantity: '1' })
+    expect(confirmedSteady.confirmed?.activeRowId).toBe('strong-uptrend')
+    expect(confirmedSteady.confirmed?.volumeConfirmsOi).toBe(false)
   })
 
-  it('scales the price noise floor with the prior observed range', () => {
+  it('confirms two consecutive closes in the same direction when their combined 2-bar move clears the threshold', () => {
     const tracker = new SignalConfirmation('5m', 0)
-    fillWindow(tracker, 0, { pricePct: 1 })
-    expect(fillWindow(tracker, duration, { pricePct: 0.1, quantity: '1.2' }).candidate).toBeNull()
+    const first = fillWindow(tracker, 0, { pricePct: 0.012, oiPct: 0.006 })
+    expect(first.completed).toBe(0)
+    const second = fillWindow(tracker, duration, { pricePct: 0.012, oiPct: 0.006 })
+    expect(second.completed).toBe(2)
+    expect(second.status).toBe('confirmed')
+    expect(second.confirmed?.activeRowId).toBe('strong-uptrend')
   })
 
   it('includes exact threshold boundaries without floating-point sign noise', () => {
     const tracker = new SignalConfirmation('5m', 0)
-    fillWindow(tracker, 0)
-    const first = fillWindow(tracker, duration, { pricePct: 0.05, oiPct: 0.05, quantity: '1.1' })
+    const first = fillWindow(tracker, 0, { pricePct: SIGNAL_RULES.minimumPricePct, oiPct: SIGNAL_RULES.minimumOiPct, quantity: '1' })
     expect(first.candidate).toBe('strong-uptrend')
-    expect(fillWindow(tracker, 2 * duration, { pricePct: 0.05, oiPct: 0.05, quantity: '1.21' }).confirmed?.activeRowId).toBe('strong-uptrend')
+    expect(
+      fillWindow(tracker, duration, { pricePct: SIGNAL_RULES.minimumPricePct, oiPct: SIGNAL_RULES.minimumOiPct, quantity: '1.1' }).confirmed?.activeRowId,
+    ).toBe('strong-uptrend')
   })
 
   it('supports weak regimes without pretending decreasing OI proves reversal', () => {
@@ -136,12 +149,12 @@ describe('closed-window signal confirmation', () => {
   it('uses full 15-minute windows in slow mode', () => {
     const tracker = new SignalConfirmation('15m', 0)
     const slow = 900_000
-    fillWindow(tracker, 0, {}, slow)
-    expect(fillWindow(tracker, slow, { quantity: '1.2' }, slow).completed).toBe(1)
-    const view = fillWindow(tracker, 2 * slow, { quantity: '1.44' }, slow)
+    expect(fillWindow(tracker, 0, {}, slow).completed).toBe(1)
+    const view = fillWindow(tracker, slow, { quantity: '1.2' }, slow)
+    expect(view.completed).toBe(2)
     expect(view.confirmed?.activeRowId).toBe('strong-uptrend')
     expect(view.mode).toBe('15m')
-    expect(view.lastClosedAt).toBe(3 * slow)
+    expect(view.lastClosedAt).toBe(2 * slow)
     expect(SIGNAL_RULES.confirmations).toBe(2)
   })
 
@@ -149,7 +162,7 @@ describe('closed-window signal confirmation', () => {
     const tracker = new SignalConfirmation('5m', 0)
     for (let time = 0; time < 12 * duration; time += 10_000) {
       if (time % 60_000 === 0) tracker.openInterest({ time, btc: 30_000 }, time)
-      tracker.trade({ id: `hour-${time}`, time, price: 80_000 + time / 10_000, quantityBtc: '1', side: 'buy' }, time)
+      tracker.trade({ id: `hour-${time}`, time, price: 80_000 + time / 100_000, quantityBtc: '1', side: 'buy' }, time)
       tracker.view(time, true)
     }
     const view = tracker.view(12 * duration, true)
@@ -214,5 +227,34 @@ describe('closed-window signal confirmation', () => {
     expect(view.status).toBe('insufficient')
     expect(view.reason).toContain('Observations paused')
     expect(view.evaluatedWindows).toBe(3)
+  })
+
+  it('seeds initial closed windows from OKX REST history to avoid cold-start warm-up', () => {
+    const now = 3 * duration + 45_000
+    const tracker = new SignalConfirmation('5m', now)
+    const seeds = buildConfirmationSeeds({
+      now,
+      duration,
+      candles: [
+        { time: duration, open: 80_000, high: 80_100, low: 79_990, close: 80_050, volumeBtc: 100 },
+        { time: 2 * duration, open: 80_050, high: 80_150, low: 80_040, close: 80_110, volumeBtc: 120 },
+      ],
+      takerBuckets: [
+        { time: duration, sellBtc: 40, buyBtc: 60, deltaBtc: 20, volumeBtc: 100 },
+        { time: 2 * duration, sellBtc: 45, buyBtc: 75, deltaBtc: 30, volumeBtc: 120 },
+      ],
+      oiPoints: [
+        { time: 0, oiUsd: 2_400_000_000 },
+        { time: duration, oiUsd: 2_402_000_000 },
+        { time: 2 * duration, oiUsd: 2_405_000_000 },
+      ],
+    })
+    expect(seeds).toHaveLength(2)
+    expect(tracker.seedHistory(seeds, now)).toBe(true)
+    const view = tracker.view(now, true)
+    expect(view.status).toBe('confirmed')
+    expect(view.completed).toBe(2)
+    expect(view.confirmed?.activeRowId).toBe('strong-uptrend')
+    expect(view.evaluatedWindows).toBe(2)
   })
 })

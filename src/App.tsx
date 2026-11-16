@@ -85,7 +85,13 @@ function App() {
   const clearMarketEvents = () => setDismissedIds(prev => Array.from(new Set([...prev, ...visibleEventIds])))
   const confirmationInfo = describeConfirmation(live.confirmation)
   const observed = live.confirmation.observed
-  const regimeBadge = live.confirmation.status === 'confirmed' ? 'CONFIRMED' : 'LAST CONFIRMED'
+  const isCandidateOnly = live.confirmation.status === 'pending' && !live.confirmation.confirmed
+  const regimeBadge =
+    live.confirmation.status === 'confirmed'
+      ? 'CONFIRMED (2/2)'
+      : live.confirmation.confirmed
+        ? 'LAST CONFIRMED'
+        : 'CANDIDATE (1/2)'
 
   const captureCurrentSnapshot = () =>
     buildPageDataSnapshot({
@@ -347,6 +353,7 @@ function App() {
                   {live.oiRegime.activeRow ? (
                     <span className={`verdict-pill ${live.oiRegime.activeRow.sentiment.toLowerCase()}`}>
                       {live.oiRegime.activeRow.marketTitle} · {live.oiRegime.activeRow.sentiment}
+                      {isCandidateOnly ? ' (1/2)' : ''}
                     </span>
                   ) : (
                     <span className="verdict-pill neutral">{confirmationInfo.status}</span>
@@ -383,8 +390,10 @@ function App() {
                   <small>Market</small>
                   <strong>
                     {live.oiRegime.activeRow
-                      ? `${live.oiRegime.activeRow.marketTitle} - ${live.oiRegime.activeRow.sentiment}`
-                      : 'Baseline...'}
+                      ? `${live.oiRegime.activeRow.marketTitle} - ${live.oiRegime.activeRow.sentiment}${isCandidateOnly ? ' (1/2)' : ''}`
+                      : observed
+                        ? 'Mixed / flat'
+                        : 'Baseline...'}
                   </strong>
                 </div>
               </div>
@@ -634,10 +643,10 @@ function App() {
                   <input type="radio" name="confirmation-mode" value="15m" checked={confirmationMode === '15m'} onChange={() => setConfirmationMode('15m')} />
                 </label>
                 <p>
-                  Changing this restarts confirmation. Two matching valid closes are needed; a strong label also needs a prior valid window for volume. Windows are fixed UTC blocks: for 5m, 12:05–12:10 and 12:10–12:15 UTC are two closed windows. The block in progress is never evaluated and no live candle is used.
+                  Initial closed windows are seeded from OKX REST history on load, then updated on each live UTC window close (for 5m, 12:05–12:10 and 12:10–12:15 UTC). One directional close highlights a 1/2 candidate; two consecutive matching closes confirm the regime (2/2).
                 </p>
                 <p>
-                  Uncalibrated defaults: price must move at least the larger of {SIGNAL_RULES.minimumPricePct}% or {SIGNAL_RULES.priorRangeFraction * 100}% of the previous window&apos;s range; open interest must change at least {SIGNAL_RULES.minimumOiPct}%; a strong label also needs volume up at least {SIGNAL_RULES.minimumVolumeChangePct}%.
+                  Defaults: price must move at least {SIGNAL_RULES.minimumPricePct}% and open interest at least {SIGNAL_RULES.minimumOiPct}% (either per window or across two consecutive closes in the same direction). Price and open interest determine the regime, with volume (±{SIGNAL_RULES.minimumVolumeChangePct}%) tracked as supporting confirmation.
                 </p>
                 <p>
                   Open interest is checked every {SIGNAL_RULES.oiRefreshMs / 1000} seconds over public REST and on each WebSocket update. Unchanged open interest is normal. Values older than {SIGNAL_RULES.maximumOiAgeMs / 1000} seconds are not used. Actual feed gaps restart confirmation; switching tabs alone does not.

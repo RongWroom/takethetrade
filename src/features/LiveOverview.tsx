@@ -34,6 +34,7 @@ import {
   SignalConfirmation,
   type ConfirmationMode,
   type ConfirmationView,
+  type HistoricalWindowSeed,
 } from '../domain/signalConfirmation'
 import type { Metric } from '../fixtures/demo'
 
@@ -479,9 +480,56 @@ function buildLiveStoryBuckets(params: {
   })
 }
 
+export function buildConfirmationSeeds(params: {
+  now: number
+  duration: number
+  candles: readonly OkxCandlePoint[]
+  takerBuckets: readonly OkxTakerVolumeBucket[]
+  oiPoints: readonly OkxOiHistoryPoint[]
+}): HistoricalWindowSeed[] {
+  const { now, duration, candles, takerBuckets, oiPoints } = params
+  const currentStart = Math.floor(now / duration) * duration
+  const closedCandles = candles.filter(c => c.time + duration <= currentStart).slice(-4)
+  if (closedCandles.length === 0 || oiPoints.length < 2) return []
+
+  const takerMap = new Map<number, OkxTakerVolumeBucket>()
+  for (const tb of takerBuckets) takerMap.set(tb.time, tb)
+
+  const oiMap = new Map<number, OkxOiHistoryPoint>()
+  for (const pt of oiPoints) oiMap.set(pt.time, pt)
+
+  const seeds: HistoricalWindowSeed[] = []
+  for (const c of closedCandles) {
+    const start = c.time
+    const end = start + duration
+    const currOi = oiMap.get(start) ?? oiMap.get(end)
+    const prevOi = oiMap.get(start - duration)
+    if (!currOi || !prevOi || currOi.time === prevOi.time || c.close <= 0) continue
+    const oiStartBtc = prevOi.oiUsd / c.close
+    const oiEndBtc = currOi.oiUsd / c.close
+    const taker = takerMap.get(start)
+    const volumeBtc = taker ? taker.volumeBtc : c.volumeBtc
+    const deltaBtc = taker ? taker.deltaBtc : null
+    seeds.push({
+      start,
+      end,
+      priceStart: c.open,
+      priceEnd: c.close,
+      high: c.high,
+      low: c.low,
+      oiStartBtc,
+      oiEndBtc,
+      volumeBtc,
+      deltaBtc,
+    })
+  }
+  return seeds
+}
+
 export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationMode: ConfirmationMode = '5m'): LiveDashboardState {
   const tfOption = getTimeframeOption(timeframeId)
   const tfRef = useRef<TimeframeOption>(tfOption)
+  const confirmationModeRef = useRef<ConfirmationMode>(confirmationMode)
 
   const publishRef = useRef<(() => void) | null>(null)
   const backfillRef = useRef<RestBackfillCache>({})
@@ -490,7 +538,7 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
   const [state, setState] = useState<LiveDashboardState>(() => {
     const now = Date.now()
     const anchor = Math.floor(now / tfOption.bucketMs) * tfOption.bucketMs
-    const confirmation = new SignalConfirmation(confirmationMode, now).view(now, false, 'Connection: Connecting.')
+    const confirmation = new SignalConfirmation(confirmationMode, now).view(now, true)
     const story = evaluateMarketStory({
       buckets: buildInitialStoryBuckets(now, tfOption.bucketMs),
       vwap: null,
@@ -534,6 +582,7 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
   })
 
   useEffect(() => {
+    confirmationModeRef.current = confirmationMode
     trackerRef.current = new SignalConfirmation(confirmationMode, Date.now())
     publishRef.current?.()
   }, [confirmationMode])
@@ -550,6 +599,7 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
     let lastPrice: string | null = null
     let updated: number | null = null
     let gap = true
+    let feedEverReady = false
     const sessionStart = Date.now()
     let trades: (Trade & { price: string })[] = []
     let attempts = 0
@@ -558,15 +608,22 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
     let oiTime: number | null = null
     const oiHistory: { time: number; btc: number }[] = []
     let oiRefreshing = false
-    const acceptOi = (sample: { btc: string; time: number }) => {
+    const acceptOi = (sample: { btc: string; time: number }, allowRefreshAtNow = false) => {
       const num = Number(sample.btc)
-      if (!Number.isFinite(num) || sample.time > Date.now() + 1000 || (oiTime !== null && sample.time <= oiTime)) return false
+      const now = Date.now()
+      if (!Number.isFinite(num) || sample.time > now + 1000) return false
+      let effectiveTime = sample.time
+      if (oiTime !== null && sample.time <= oiTime) {
+        if (!allowRefreshAtNow || sample.time < oiTime) return false
+        effectiveTime = Math.max(sample.time, now)
+        if (effectiveTime <= oiTime) return false
+      }
       oi = sample.btc
-      oiTime = sample.time
+      oiTime = effectiveTime
       if (oiInitial === null) oiInitial = num
-      oiHistory.push({ time: sample.time, btc: num })
+      oiHistory.push({ time: effectiveTime, btc: num })
       if (oiHistory.length > 120) oiHistory.shift()
-      trackerRef.current?.openInterest({ time: sample.time, btc: num }, Date.now())
+      trackerRef.current?.openInterest({ time: effectiveTime, btc: num }, now)
       return true
     }
     const seenLiqIds = new Set<string>()
@@ -713,6 +770,30 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
         gap,
       })
 
+      const confMode = confirmationModeRef.current
+      const confCached = backfillRef.current[confMode]
+      if (confCached) {
+        const confDuration = confMode === '15m' ? 900_000 : 300_000
+        const seeds = buildConfirmationSeeds({
+          now,
+          duration: confDuration,
+          candles: confCached.candles,
+          takerBuckets: confCached.takerBuckets,
+          oiPoints: confCached.oiPoints,
+        })
+        if (seeds.length > 0 && tracker.seedHistory(seeds, now) && oi !== null && oiTime !== null) {
+          tracker.openInterest({ time: oiTime, btc: Number(oi) }, now)
+        }
+      }
+
+      if (effectiveStatus === 'Connected' && !oiStale) {
+        feedEverReady = true
+      }
+      const inInitialHandshake =
+        !feedEverReady &&
+        now - sessionStart < 15_000 &&
+        (effectiveStatus === 'Connecting' || (effectiveStatus === 'Connected' && oiTime === null))
+
       const healthReason =
         effectiveStatus === 'Stale'
           ? 'Trade feed is stale.'
@@ -723,8 +804,13 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
               : oiStale
                 ? 'Latest open-interest snapshot is older than 90 seconds.'
                 : undefined
-      const confirmation = tracker.view(now, effectiveStatus === 'Connected' && !oiStale, healthReason)
-      const oiRegime = confirmation.confirmed ?? emptyOiRegime
+      const trackerHealthy = (effectiveStatus === 'Connected' && !oiStale) || inInitialHandshake
+      const confirmation = tracker.view(now, trackerHealthy, trackerHealthy ? undefined : healthReason)
+      const oiRegime =
+        confirmation.confirmed ??
+        (confirmation.status === 'pending' && confirmation.observed?.activeRow
+          ? confirmation.observed
+          : emptyOiRegime)
 
       const liveStoryBuckets = buildLiveStoryBuckets({
         now,
@@ -949,7 +1035,7 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
         const json = (await res.json()) as { data?: unknown }
         const row = Array.isArray(json.data) ? json.data.find(r => (r as { instId?: unknown }).instId === 'BTC-USDT-SWAP') : undefined
         if (!row || stopped) return
-        if (acceptOi(normalizeOkxOpenInterest(row))) publish()
+        if (acceptOi(normalizeOkxOpenInterest(row), true)) publish()
       } catch {
         return
       } finally {
@@ -994,29 +1080,34 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
     const tf = getTimeframeOption(timeframeId)
     tfRef.current = tf
     publishRef.current?.()
-    if (backfillRef.current[timeframeId]) {
+
+    const targets = Array.from(new Set<TimeframeId>([timeframeId, confirmationMode])).filter(
+      id => !backfillRef.current[id],
+    )
+    if (targets.length === 0) {
       publishRef.current?.()
       return
     }
     let cancelled = false
     const controller = new AbortController()
-    const fetchBackfill = async () => {
+    const fetchBackfillFor = async (targetId: TimeframeId) => {
+      const targetTf = getTimeframeOption(targetId)
       try {
         const candleReq = fetch(
-          `https://www.okx.com/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=${tf.candleBar}&limit=26`,
+          `https://www.okx.com/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=${targetTf.candleBar}&limit=26`,
           { signal: controller.signal },
         ).then(r => (r.ok ? r.json() : null))
 
-        const takerReq = tf.rubikPeriod
+        const takerReq = targetTf.rubikPeriod
           ? fetch(
-              `https://www.okx.com/api/v5/rubik/stat/taker-volume-contract?instId=BTC-USDT-SWAP&period=${tf.rubikPeriod}&unit=1&limit=12`,
+              `https://www.okx.com/api/v5/rubik/stat/taker-volume-contract?instId=BTC-USDT-SWAP&period=${targetTf.rubikPeriod}&unit=1&limit=12`,
               { signal: controller.signal },
             ).then(r => (r.ok ? r.json() : null))
           : Promise.resolve(null)
 
-        const oiReq = tf.rubikPeriod
+        const oiReq = targetTf.rubikPeriod
           ? fetch(
-              `https://www.okx.com/api/v5/rubik/stat/contracts/open-interest-volume?ccy=BTC&period=${tf.rubikPeriod}`,
+              `https://www.okx.com/api/v5/rubik/stat/contracts/open-interest-volume?ccy=BTC&period=${targetTf.rubikPeriod}`,
               { signal: controller.signal },
             ).then(r => (r.ok ? r.json() : null))
           : Promise.resolve(null)
@@ -1029,19 +1120,21 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
         const oiPoints = normalizeOkxOiHistory(oiJson?.data)
 
         if (candles.length > 0 || takerBuckets.length > 0 || oiPoints.length > 0) {
-          backfillRef.current[timeframeId] = { candles, takerBuckets, oiPoints }
+          backfillRef.current[targetId] = { candles, takerBuckets, oiPoints }
           publishRef.current?.()
         }
       } catch {
         // Ignore network/CORS errors in restricted test environments and rely on live WebSocket stream
       }
     }
-    void fetchBackfill()
+    for (const targetId of targets) {
+      void fetchBackfillFor(targetId)
+    }
     return () => {
       cancelled = true
       controller.abort()
     }
-  }, [timeframeId])
+  }, [timeframeId, confirmationMode])
 
   return state
 }
