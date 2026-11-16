@@ -11,7 +11,7 @@ export const SIGNAL_RULES = {
   maximumSampleGapMs: 15_000,
   maximumOiAgeMs: 90_000,
   oiRefreshMs: 30_000,
-  maximumObservationGapMs: 30_000,
+  maximumObservationGapMs: 120_000,
 } as const
 
 export type HistoricalWindowSeed = {
@@ -74,6 +74,7 @@ type Window = {
 }
 
 type PreviousWindow = {
+  start: number
   end: number
   priceStart: number
   priceEnd: number
@@ -104,6 +105,7 @@ export class SignalConfirmation {
   private current: Window | null = null
   private latestOi: Observation | null = null
   private previous: PreviousWindow | null = null
+  private history: PreviousWindow[] = []
   private candidate: OiRegimeId | null = null
   private completed = 0
   private misses = 0
@@ -131,6 +133,7 @@ export class SignalConfirmation {
     this.current = null
     this.latestOi = null
     this.previous = null
+    this.history = []
     this.candidate = null
     this.completed = 0
     this.misses = 0
@@ -144,11 +147,11 @@ export class SignalConfirmation {
   }
 
   /**
-   * Seeds initial closed windows from OKX historical REST data when no live windows
-   * have been evaluated yet, eliminating the cold-start warm-up wait on page load.
+   * Seeds initial closed windows from OKX historical REST data and catches up on
+   * newly closed windows, eliminating the cold-start warm-up wait and recovering after pauses.
    */
   seedHistory(windows: readonly HistoricalWindowSeed[], now: number): boolean {
-    if (this.evaluatedWindows > 0 || windows.length === 0) return false
+    if (windows.length === 0) return false
     const currentBoundary = Math.floor(now / this.duration) * this.duration
     const valid = windows
       .filter(
@@ -180,8 +183,38 @@ export class SignalConfirmation {
       }
     }
 
+    const latestSeedEnd = contiguous[contiguous.length - 1].end
+    const needsFullSeed =
+      this.lastClosedAt === null ||
+      this.status === 'warming' ||
+      this.status === 'insufficient' ||
+      this.previous === null
+
+    let toEvaluate: HistoricalWindowSeed[] = []
+    if (needsFullSeed) {
+      if (this.lastClosedAt !== null && this.lastClosedAt >= latestSeedEnd && this.status !== 'insufficient' && this.status !== 'warming') {
+        return false
+      }
+      this.previous = null
+      this.history = []
+      this.candidate = null
+      this.completed = 0
+      this.misses = 0
+      this.confirmed = null
+      this.evaluatedWindows = 0
+      toEvaluate = contiguous
+    } else if (this.lastClosedAt !== null && latestSeedEnd > this.lastClosedAt) {
+      const closedAt = this.lastClosedAt
+      toEvaluate = contiguous.filter(w => w.start >= closedAt)
+      if (toEvaluate.length === 0 || toEvaluate[0].start !== closedAt) {
+        return false
+      }
+    } else {
+      return false
+    }
+
     this.suspended = false
-    for (const sw of contiguous) {
+    for (const sw of toEvaluate) {
       const high = sw.high !== undefined && Number.isFinite(sw.high) ? sw.high : Math.max(sw.priceStart, sw.priceEnd)
       const low = sw.low !== undefined && Number.isFinite(sw.low) ? sw.low : Math.min(sw.priceStart, sw.priceEnd)
       this.evaluateCompletedWindow({
@@ -229,7 +262,7 @@ export class SignalConfirmation {
   trade(input: { id: string; time: number; price: number; quantityBtc: string; side: 'buy' | 'sell' }, receivedAt: number): void {
     this.advance(receivedAt)
     const w = this.current
-    if (!w || input.time < w.start || input.time >= w.start + this.duration || input.time > receivedAt + 1000) return
+    if (!w || input.time < w.start || input.time >= w.start + this.duration || input.time > receivedAt + 60_000) return
     if (w.ids.has(input.id)) return
     if (!Number.isFinite(input.price) || input.price <= 0) {
       w.invalid = true
@@ -258,7 +291,7 @@ export class SignalConfirmation {
 
   openInterest(input: { time: number; btc: number }, receivedAt: number): void {
     this.advance(receivedAt)
-    if (!Number.isFinite(input.btc) || input.btc <= 0 || input.time > receivedAt + 1000) return
+    if (!Number.isFinite(input.btc) || input.btc <= 0 || input.time > receivedAt + 60_000) return
     if (this.latestOi && input.time <= this.latestOi.time) return
     const point = { time: input.time, value: input.btc }
     this.latestOi = point
@@ -303,42 +336,88 @@ export class SignalConfirmation {
       Math.abs(this.previous!.oiPct) > 1e-9 &&
       Math.sign(oiPct) === Math.sign(this.previous!.oiPct)
 
-    const net2PricePct =
-      isConsecutive && this.previous!.priceStart > 0
-        ? (priceEnd / this.previous!.priceStart - 1) * 100
-        : null
-    const net2OiPct =
-      isConsecutive && this.previous!.oiStart > 0
-        ? (oiEnd / this.previous!.oiStart - 1) * 100
-        : null
+    const net2PricePct = isConsecutive
+      ? ((1 + this.previous!.pricePct / 100) * (1 + pricePct / 100) - 1) * 100
+      : null
+    const net2OiPct = isConsecutive
+      ? ((1 + this.previous!.oiPct / 100) * (1 + oiPct / 100) - 1) * 100
+      : null
 
     const singlePricePass = Math.abs(pricePct) + 1e-10 >= priceThreshold
-    const twoBarPricePass =
-      samePriceSign &&
-      Math.abs(pricePct) + 1e-10 >= priceThreshold * 0.5 &&
-      Math.abs(this.previous!.pricePct) + 1e-10 >= priceThreshold * 0.5 &&
+    const shallowPullbackContinuation =
+      isConsecutive &&
+      !samePriceSign &&
+      sameOiSign &&
+      Math.abs(this.previous!.pricePct) + 1e-10 >= priceThreshold * 2 &&
+      Math.abs(pricePct) <= Math.abs(this.previous!.pricePct) * 0.35 &&
       net2PricePct !== null &&
-      Math.abs(net2PricePct) + 1e-10 >= priceThreshold
+      Math.abs(net2PricePct) + 1e-10 >= priceThreshold &&
+      Math.sign(net2PricePct) === Math.sign(this.previous!.pricePct)
+
+    const twoBarPricePass =
+      (samePriceSign &&
+        Math.abs(pricePct) + 1e-10 >= priceThreshold * 0.5 &&
+        Math.abs(this.previous!.pricePct) + 1e-10 >= priceThreshold * 0.5 &&
+        net2PricePct !== null &&
+        Math.abs(net2PricePct) + 1e-10 >= priceThreshold) ||
+      shallowPullbackContinuation
     const pricePass = singlePricePass || twoBarPricePass
+
+    const rollingOiPct =
+      isConsecutive && this.history.length >= 2
+        ? (this.history.slice(-2).reduce((acc, w) => acc * (1 + w.oiPct / 100), 1) * (1 + oiPct / 100) - 1) * 100
+        : null
 
     const singleOiPass = Math.abs(oiPct) + 1e-10 >= oiThreshold
     const twoBarOiPass =
-      sameOiSign &&
-      Math.abs(oiPct) + 1e-10 >= oiThreshold * 0.5 &&
-      Math.abs(this.previous!.oiPct) + 1e-10 >= oiThreshold * 0.5 &&
+      isConsecutive &&
       net2OiPct !== null &&
-      Math.abs(net2OiPct) + 1e-10 >= oiThreshold
-    const oiPass = singleOiPass || twoBarOiPass
+      Math.abs(net2OiPct) + 1e-10 >= oiThreshold &&
+      ((sameOiSign &&
+        Math.abs(oiPct) + 1e-10 >= oiThreshold * 0.5 &&
+        Math.abs(this.previous!.oiPct) + 1e-10 >= oiThreshold * 0.5) ||
+        (twoBarPricePass && Math.abs(oiPct) + 1e-10 >= oiThreshold * 0.5))
+    const rollingOiPass =
+      !singleOiPass &&
+      !twoBarOiPass &&
+      singlePricePass &&
+      Math.abs(pricePct) + 1e-10 >= priceThreshold * 2 &&
+      Math.abs(oiPct) > 1e-9 &&
+      rollingOiPct !== null &&
+      Math.abs(rollingOiPct) + 1e-10 >= oiThreshold * 2
+    const oiPass = singleOiPass || twoBarOiPass || rollingOiPass
 
+    const effectivePriceStart = priceStart
+    const effectivePriceEnd =
+      shallowPullbackContinuation && net2PricePct !== null
+        ? priceStart * (1 + net2PricePct / 100)
+        : pricePass
+          ? priceEnd
+          : priceStart
+
+    const useTwoBarNetOi = twoBarPricePass && twoBarOiPass && !sameOiSign && net2OiPct !== null
+    const effectiveOiStart = oiStart
+    const effectiveOiEnd =
+      rollingOiPass && rollingOiPct !== null
+        ? oiStart * (1 + rollingOiPct / 100)
+        : useTwoBarNetOi && net2OiPct !== null
+          ? oiStart * (1 + net2OiPct / 100)
+          : oiPass
+            ? oiEnd
+            : oiStart
+
+    const rollingVolumes = [...this.history.slice(-5).map(h => h.volume), volume]
     const evaluation = evaluateOiRegime({
-      priceStart,
-      priceEnd: pricePass ? priceEnd : priceStart,
-      oiStartBtc: oiStart,
-      oiEndBtc: oiPass ? oiEnd : oiStart,
+      priceStart: effectivePriceStart,
+      priceEnd: effectivePriceEnd,
+      oiStartBtc: effectiveOiStart,
+      oiEndBtc: effectiveOiEnd,
       volumeSeriesBtc:
         this.previous !== null && volumePct !== null && Math.abs(volumePct) + 1e-10 >= SIGNAL_RULES.minimumVolumeChangePct
           ? [this.previous.volume, volume]
-          : [],
+          : rollingVolumes.length >= 4
+            ? rollingVolumes
+            : [],
     })
 
     const rawEvaluation = evaluateOiRegime({
@@ -365,18 +444,16 @@ export class SignalConfirmation {
           : `This completed window supports ${evaluation.activeRow!.marketTitle.toLowerCase()} (${evaluation.activeRow!.sentiment.toLowerCase()}). ${volumeNote}`
 
     const id = evaluation.activeRowId
-    const twoBarSameRegime =
+    const twoBarConfirmedMove =
       id !== null &&
       isConsecutive &&
-      this.previous!.rawRegimeId === id &&
-      samePriceSign &&
-      sameOiSign &&
-      twoBarPricePass &&
-      twoBarOiPass
+      ((samePriceSign && twoBarPricePass && twoBarOiPass) ||
+        shallowPullbackContinuation ||
+        (rollingOiPass && this.confirmed?.activeRowId === id))
 
     if (id !== null) {
-      if (id === this.candidate || twoBarSameRegime) {
-        this.completed = Math.min(2, Math.max(this.completed + 1, twoBarSameRegime ? 2 : 1))
+      if (id === this.candidate || twoBarConfirmedMove) {
+        this.completed = Math.min(2, Math.max(this.completed + 1, twoBarConfirmedMove ? 2 : 1))
       } else {
         this.completed = 1
       }
@@ -384,7 +461,8 @@ export class SignalConfirmation {
       this.completed = 0
     }
     this.candidate = id
-    this.previous = {
+    const currentRecord: PreviousWindow = {
+      start,
       end,
       priceStart,
       priceEnd,
@@ -396,6 +474,13 @@ export class SignalConfirmation {
       rangePct: ((high - low) / priceStart) * 100,
       rawRegimeId: rawEvaluation.activeRowId,
     }
+    if (!isConsecutive) {
+      this.history = [currentRecord]
+    } else {
+      this.history.push(currentRecord)
+      if (this.history.length > 6) this.history.shift()
+    }
+    this.previous = currentRecord
 
     if (id !== null && this.completed === 2) {
       this.confirmed = evaluation
@@ -457,6 +542,7 @@ export class SignalConfirmation {
       this.completed = 0
       this.misses = 0
       this.previous = null
+      this.history = []
       this.snapshot = emptySnapshot()
       this.status = 'insufficient'
       this.reason = invalidReason ?? 'Window data was incomplete.'

@@ -611,7 +611,7 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
     const acceptOi = (sample: { btc: string; time: number }, allowRefreshAtNow = false) => {
       const num = Number(sample.btc)
       const now = Date.now()
-      if (!Number.isFinite(num) || sample.time > now + 1000) return false
+      if (!Number.isFinite(num) || sample.time > now + 60_000) return false
       let effectiveTime = sample.time
       if (oiTime !== null && sample.time <= oiTime) {
         if (!allowRefreshAtNow || sample.time < oiTime) return false
@@ -1081,17 +1081,12 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
     tfRef.current = tf
     publishRef.current?.()
 
-    const targets = Array.from(new Set<TimeframeId>([timeframeId, confirmationMode])).filter(
-      id => !backfillRef.current[id],
-    )
-    if (targets.length === 0) {
-      publishRef.current?.()
-      return
-    }
+    const allTargets = Array.from(new Set<TimeframeId>([timeframeId, confirmationMode]))
     let cancelled = false
     const controller = new AbortController()
     const fetchBackfillFor = async (targetId: TimeframeId) => {
       const targetTf = getTimeframeOption(targetId)
+      const oiPeriod = targetTf.rubikPeriod === '1H' ? '1H' : targetTf.rubikPeriod ? '5m' : null
       try {
         const candleReq = fetch(
           `https://www.okx.com/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=${targetTf.candleBar}&limit=26`,
@@ -1105,9 +1100,9 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
             ).then(r => (r.ok ? r.json() : null))
           : Promise.resolve(null)
 
-        const oiReq = targetTf.rubikPeriod
+        const oiReq = oiPeriod
           ? fetch(
-              `https://www.okx.com/api/v5/rubik/stat/contracts/open-interest-volume?ccy=BTC&period=${targetTf.rubikPeriod}`,
+              `https://www.okx.com/api/v5/rubik/stat/contracts/open-interest-volume?ccy=BTC&period=${oiPeriod}`,
               { signal: controller.signal },
             ).then(r => (r.ok ? r.json() : null))
           : Promise.resolve(null)
@@ -1127,11 +1122,19 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
         // Ignore network/CORS errors in restricted test environments and rely on live WebSocket stream
       }
     }
-    for (const targetId of targets) {
-      void fetchBackfillFor(targetId)
+    for (const targetId of allTargets) {
+      if (!backfillRef.current[targetId]) {
+        void fetchBackfillFor(targetId)
+      }
     }
+    const refreshTimer = setInterval(() => {
+      for (const targetId of allTargets) {
+        void fetchBackfillFor(targetId)
+      }
+    }, 60_000)
     return () => {
       cancelled = true
+      clearInterval(refreshTimer)
       controller.abort()
     }
   }, [timeframeId, confirmationMode])

@@ -257,4 +257,81 @@ describe('closed-window signal confirmation', () => {
     expect(view.confirmed?.activeRowId).toBe('strong-uptrend')
     expect(view.evaluatedWindows).toBe(2)
   })
+
+  it('confirms two consecutive green closes when their 2-window net OI increases despite a 1-bar OI dip', () => {
+    const now = 2 * duration + 10_000
+    const tracker = new SignalConfirmation('5m', now)
+    tracker.seedHistory(
+      [
+        {
+          start: 0,
+          end: duration,
+          priceStart: 64_600,
+          priceEnd: 64_625,
+          oiStartBtc: 46_340,
+          oiEndBtc: 46_280,
+          volumeBtc: 14_400,
+        },
+        {
+          start: duration,
+          end: 2 * duration,
+          priceStart: 64_625,
+          priceEnd: 64_895,
+          oiStartBtc: 46_085,
+          oiEndBtc: 46_230,
+          volumeBtc: 50_700,
+        },
+      ],
+      now,
+    )
+    const view = tracker.view(now, true)
+    expect(view.status).toBe('confirmed')
+    expect(view.completed).toBe(2)
+    expect(view.confirmed?.activeRowId).toBe('strong-uptrend')
+  })
+
+  it('catches up on newly closed REST windows and recovers after an interruption', () => {
+    const tracker = new SignalConfirmation('5m', duration + 5_000)
+    tracker.seedHistory(
+      [
+        {
+          start: 0,
+          end: duration,
+          priceStart: 80_000,
+          priceEnd: 80_080,
+          oiStartBtc: 30_000,
+          oiEndBtc: 30_030,
+          volumeBtc: 100,
+        },
+      ],
+      duration + 5_000,
+    )
+    expect(tracker.view(duration + 5_000, true).status).toBe('pending')
+
+    const caughtUp = tracker.seedHistory(
+      [
+        {
+          start: 0,
+          end: duration,
+          priceStart: 80_000,
+          priceEnd: 80_080,
+          oiStartBtc: 30_000,
+          oiEndBtc: 30_030,
+          volumeBtc: 100,
+        },
+        {
+          start: duration,
+          end: 2 * duration,
+          priceStart: 80_080,
+          priceEnd: 80_160,
+          oiStartBtc: 30_030,
+          oiEndBtc: 30_070,
+          volumeBtc: 120,
+        },
+      ],
+      2 * duration + 5_000,
+    )
+    expect(caughtUp).toBe(true)
+    expect(tracker.view(2 * duration + 5_000, true).status).toBe('confirmed')
+  })
 })
