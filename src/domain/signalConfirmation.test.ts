@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { SignalConfirmation, SIGNAL_RULES } from './signalConfirmation'
-import { buildConfirmationSeeds } from '../features/LiveOverview'
+import { buildConfirmationSeeds, loadOiSamples } from '../features/LiveOverview'
 
 const duration = 300_000
 type Options = { pricePct?: number; oiPct?: number; quantity?: string; omitOiAt?: number; duplicate?: boolean }
@@ -32,17 +32,17 @@ function confirmedTracker() {
 }
 
 describe('closed-window signal confirmation', () => {
-  it('identifies a 1/2 candidate on the first close and confirms on the second distinct completed window', () => {
+  it('confirms on the first completed window and keeps confirming on the next', () => {
     const tracker = new SignalConfirmation('5m', 0)
     const first = fillWindow(tracker, 0, { quantity: '1.2' })
     expect(first.completed).toBe(1)
-    expect(first.status).toBe('pending')
+    expect(first.status).toBe('confirmed')
     expect(first.candidate).toBe('strong-uptrend')
     expect(first.observed?.activeRowId).toBe('strong-uptrend')
-    expect(first.confirmed).toBeNull()
+    expect(first.confirmed?.activeRowId).toBe('strong-uptrend')
     for (let i = 1; i <= 5; i++) expect(tracker.view(duration + i * 1000, true).completed).toBe(1)
     const second = fillWindow(tracker, duration, { quantity: '1.44' })
-    expect(second.completed).toBe(2)
+    expect(second.completed).toBe(1)
     expect(second.status).toBe('confirmed')
     expect(second.confirmed?.activeRowId).toBe('strong-uptrend')
     expect(second.snapshot.deltaBtc).toBeCloseTo(43.2)
@@ -57,19 +57,16 @@ describe('closed-window signal confirmation', () => {
     tracker.trade({ id: 'partial', time: 10_000, price: 80_000, quantityBtc: '100', side: 'buy' }, 10_000)
     expect(tracker.view(duration, true).lastClosedAt).toBeNull()
     expect(fillWindow(tracker, duration).completed).toBe(1)
-    expect(fillWindow(tracker, 2 * duration, { quantity: '1.2' }).completed).toBe(2)
+    expect(fillWindow(tracker, 2 * duration, { quantity: '1.2' }).completed).toBe(1)
   })
 
-  it('holds one opposing close, confirms two, and uses matching pulse and snapshot', () => {
+  it('switches to an opposing close immediately and uses matching pulse and snapshot', () => {
     const tracker = confirmedTracker()
-    const opposing = { pricePct: -0.1, quantity: '1.728' }
-    const first = fillWindow(tracker, 3 * duration, opposing)
-    expect(first.status).toBe('pending')
+    const first = fillWindow(tracker, 3 * duration, { pricePct: -0.1, quantity: '1.728' })
+    expect(first.status).toBe('confirmed')
     expect(first.candidate).toBe('strong-downtrend')
-    expect(first.confirmed?.activeRowId).toBe('strong-uptrend')
-    const second = fillWindow(tracker, 4 * duration, { ...opposing, quantity: '2.0736' })
-    expect(second.confirmed?.activeRowId).toBe('strong-downtrend')
-    expect(second.pulse.ruleId).toBe('confirmed-strong-downtrend')
+    expect(first.confirmed?.activeRowId).toBe('strong-downtrend')
+    expect(first.pulse.ruleId).toBe('confirmed-strong-downtrend')
   })
 
   it('does not preserve an old trend through two mixed or different unsupported closes', () => {
@@ -95,12 +92,12 @@ describe('closed-window signal confirmation', () => {
     expect(confirmedSteady.confirmed?.volumeConfirmsOi).toBe(false)
   })
 
-  it('confirms two consecutive closes in the same direction when their combined 2-bar move clears the threshold', () => {
+  it('confirms on the second close when two same-direction closes combine to clear the threshold', () => {
     const tracker = new SignalConfirmation('5m', 0)
     const first = fillWindow(tracker, 0, { pricePct: 0.012, oiPct: 0.006 })
     expect(first.completed).toBe(0)
     const second = fillWindow(tracker, duration, { pricePct: 0.012, oiPct: 0.006 })
-    expect(second.completed).toBe(2)
+    expect(second.completed).toBe(1)
     expect(second.status).toBe('confirmed')
     expect(second.confirmed?.activeRowId).toBe('strong-uptrend')
   })
@@ -151,11 +148,11 @@ describe('closed-window signal confirmation', () => {
     const slow = 900_000
     expect(fillWindow(tracker, 0, {}, slow).completed).toBe(1)
     const view = fillWindow(tracker, slow, { quantity: '1.2' }, slow)
-    expect(view.completed).toBe(2)
+    expect(view.completed).toBe(1)
     expect(view.confirmed?.activeRowId).toBe('strong-uptrend')
     expect(view.mode).toBe('15m')
     expect(view.lastClosedAt).toBe(2 * slow)
-    expect(SIGNAL_RULES.confirmations).toBe(2)
+    expect(SIGNAL_RULES.confirmations).toBe(1)
   })
 
   it('evaluates an hour of quiet OI as mixed, rather than restarting warm-up', () => {
@@ -178,7 +175,7 @@ describe('closed-window signal confirmation', () => {
     expect(view.pulse.headline).not.toContain('Waiting')
   })
 
-  it('accepts once-per-minute OI and confirms two windows without requiring 15-second updates', () => {
+  it('accepts once-per-minute OI and confirms over two windows without requiring 15-second updates', () => {
     const tracker = new SignalConfirmation('5m', 0)
     for (let time = 0; time < 2 * duration; time += 10_000) {
       if (time % 60_000 === 0) tracker.openInterest({ time, btc: 30_000 - 30 * time / duration }, time)
@@ -253,9 +250,53 @@ describe('closed-window signal confirmation', () => {
     expect(tracker.seedHistory(seeds, now)).toBe(true)
     const view = tracker.view(now, true)
     expect(view.status).toBe('confirmed')
-    expect(view.completed).toBe(2)
+    expect(view.completed).toBe(1)
     expect(view.confirmed?.activeRowId).toBe('strong-uptrend')
     expect(view.evaluatedWindows).toBe(2)
+  })
+
+  it('seeds closed windows from locally sampled OI when the rubik history is unavailable (CORS)', () => {
+    const now = 3 * duration + 45_000
+    const seeds = buildConfirmationSeeds({
+      now,
+      duration,
+      candles: [
+        { time: duration, open: 80_000, high: 80_100, low: 79_990, close: 80_050, volumeBtc: 100 },
+        { time: 2 * duration, open: 80_050, high: 80_150, low: 80_040, close: 80_110, volumeBtc: 120 },
+      ],
+      takerBuckets: [],
+      oiSamples: [
+        { time: duration - 20_000, btc: 30_000 },
+        { time: 2 * duration - 10_000, btc: 30_030 },
+        { time: 3 * duration - 30_000, btc: 30_070 },
+      ],
+    })
+    expect(seeds).toHaveLength(2)
+    expect(seeds[0]).toMatchObject({ start: duration, oiStartBtc: 30_000, oiEndBtc: 30_030, volumeBtc: 100 })
+    const tracker = new SignalConfirmation('5m', now)
+    expect(tracker.seedHistory(seeds, now)).toBe(true)
+    expect(tracker.view(now, true).status).toBe('confirmed')
+  })
+
+  it('restores persisted OI samples after a reload, dropping stale, future and out-of-order entries', () => {
+    const now = 10_000_000
+    const store = JSON.stringify([
+      { time: now - 3 * 60 * 60_000, btc: 30_000 },
+      { time: now - 120_000, btc: 30_010 },
+      { time: now - 150_000, btc: 30_005 },
+      { time: now - 60_000, btc: -1 },
+      { time: now - 30_000, btc: 30_020 },
+      { time: now + 600_000, btc: 30_030 },
+      null,
+    ])
+    vi.stubGlobal('localStorage', { getItem: () => store })
+    expect(loadOiSamples(now)).toEqual([
+      { time: now - 120_000, btc: 30_010 },
+      { time: now - 30_000, btc: 30_020 },
+    ])
+    vi.stubGlobal('localStorage', { getItem: () => '{bad json' })
+    expect(loadOiSamples(now)).toEqual([])
+    vi.unstubAllGlobals()
   })
 
   it('confirms two consecutive green closes when their 2-window net OI increases despite a 1-bar OI dip', () => {
@@ -286,7 +327,7 @@ describe('closed-window signal confirmation', () => {
     )
     const view = tracker.view(now, true)
     expect(view.status).toBe('confirmed')
-    expect(view.completed).toBe(2)
+    expect(view.completed).toBe(1)
     expect(view.confirmed?.activeRowId).toBe('strong-uptrend')
   })
 
@@ -306,7 +347,7 @@ describe('closed-window signal confirmation', () => {
       ],
       duration + 5_000,
     )
-    expect(tracker.view(duration + 5_000, true).status).toBe('pending')
+    expect(tracker.view(duration + 5_000, true).status).toBe('confirmed')
 
     const caughtUp = tracker.seedHistory(
       [

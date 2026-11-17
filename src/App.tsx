@@ -85,13 +85,12 @@ function App() {
   const clearMarketEvents = () => setDismissedIds(prev => Array.from(new Set([...prev, ...visibleEventIds])))
   const confirmationInfo = describeConfirmation(live.confirmation)
   const observed = live.confirmation.observed
-  const isCandidateOnly = live.confirmation.status === 'pending' && !live.confirmation.confirmed
   const regimeBadge =
     live.confirmation.status === 'confirmed'
-      ? 'CONFIRMED (2/2)'
+      ? 'CONFIRMED'
       : live.confirmation.confirmed
         ? 'LAST CONFIRMED'
-        : 'CANDIDATE (1/2)'
+        : 'NO CONFIRMED REGIME'
 
   const captureCurrentSnapshot = () =>
     buildPageDataSnapshot({
@@ -353,7 +352,6 @@ function App() {
                   {live.oiRegime.activeRow ? (
                     <span className={`verdict-pill ${live.oiRegime.activeRow.sentiment.toLowerCase()}`}>
                       {live.oiRegime.activeRow.marketTitle} · {live.oiRegime.activeRow.sentiment}
-                      {isCandidateOnly ? ' (1/2)' : ''}
                     </span>
                   ) : (
                     <span className="verdict-pill neutral">{confirmationInfo.status}</span>
@@ -390,7 +388,7 @@ function App() {
                   <small>Market</small>
                   <strong>
                     {live.oiRegime.activeRow
-                      ? `${live.oiRegime.activeRow.marketTitle} - ${live.oiRegime.activeRow.sentiment}${isCandidateOnly ? ' (1/2)' : ''}`
+                      ? `${live.oiRegime.activeRow.marketTitle} - ${live.oiRegime.activeRow.sentiment}`
                       : observed
                         ? 'Mixed / flat'
                         : 'Baseline...'}
@@ -604,7 +602,7 @@ function App() {
               <div className="detail-box">
                 <strong>🧩 Chapters, cards &amp; pulse</strong>
                 <p>The progression pills (Balanced → Buying builds → …) show how the market got here. A dashed pill is still developing live.</p>
-                <p>Tap the four cards to flip them for plain-English explanations. Market Pulse waits for two matching closed windows before confirming a trend — it won't jump at noise.</p>
+                <p>Tap the four cards to flip them for plain-English explanations. Market Pulse only updates when a closed window clears the price and open-interest thresholds — it won't jump at noise.</p>
               </div>
               <div className="detail-box">
                 <strong>🚦 The 10-second routine</strong>
@@ -626,24 +624,24 @@ function App() {
               <div className="detail-box" role="radiogroup" aria-label="Signal confirmation">
                 <strong>Signal confirmation</strong>
                 <p>
-                  Pulse and the regime matrix use closed windows of this length, independent of the chart timeframe. Confirmation needs two matching closes.
+                  Pulse and the regime matrix use closed windows of this length, independent of the chart timeframe. A single completed window that clears the thresholds confirms.
                 </p>
                 <label className="setting">
                   <span>
                     <strong>Balanced</strong>
-                    <small>2 × 5m closes</small>
+                    <small>One 5m close</small>
                   </span>
                   <input type="radio" name="confirmation-mode" value="5m" checked={confirmationMode === '5m'} onChange={() => setConfirmationMode('5m')} />
                 </label>
                 <label className="setting">
                   <span>
                     <strong>Slow</strong>
-                    <small>2 × 15m closes</small>
+                    <small>One 15m close</small>
                   </span>
                   <input type="radio" name="confirmation-mode" value="15m" checked={confirmationMode === '15m'} onChange={() => setConfirmationMode('15m')} />
                 </label>
                 <p>
-                  Initial closed windows are seeded from OKX REST history on load, then updated on each live UTC window close (for 5m, 12:05–12:10 and 12:10–12:15 UTC). One directional close highlights a 1/2 candidate; two consecutive matching closes confirm the regime (2/2).
+                  Closed windows are rebuilt from OKX candles and locally sampled open interest after an interruption, then updated on each live UTC window close (for 5m, 12:05–12:10 and 12:10–12:15 UTC). One completed close that clears the thresholds confirms the regime.
                 </p>
                 <p>
                   Defaults: price must move at least {SIGNAL_RULES.minimumPricePct}% and open interest at least {SIGNAL_RULES.minimumOiPct}% (either per window or across two consecutive closes in the same direction). Price and open interest determine the regime, with volume (±{SIGNAL_RULES.minimumVolumeChangePct}%) tracked as supporting confirmation.

@@ -3,7 +3,7 @@ import { btcToSatoshis, evaluateOiRegime, type OiRegimeEvaluation, type OiRegime
 export type ConfirmationMode = '5m' | '15m'
 export { LIQUIDATION_LARGE_USD } from './marketRules'
 export const SIGNAL_RULES = {
-  confirmations: 2,
+  confirmations: 1,
   minimumPricePct: 0.02,
   priorRangeFraction: 0,
   minimumOiPct: 0.01,
@@ -91,11 +91,11 @@ const emptySnapshot = (): Snapshot => ({ priceStart: null, priceEnd: null, delta
 const quietPulse = (status: ConfirmationView['status']): PulseEvaluation => ({
   ruleId: status === 'mixed' ? 'confirmed-mixed' : 'insufficient-data',
   observation: status === 'mixed' ? 'Mixed / sideways' : status === 'insufficient' ? 'Insufficient data' : 'Waiting for confirmation',
-  headline: status === 'mixed' ? 'No confirmed directional trend.' : status === 'insufficient' ? 'Waiting for usable market data.' : 'Waiting for two matching completed windows.',
+  headline: status === 'mixed' ? 'No confirmed directional trend.' : status === 'insufficient' ? 'Waiting for usable market data.' : 'Waiting for the next completed window.',
   copy: status === 'insufficient'
     ? 'The feed is stale or interrupted. Fresh complete windows are required before confirming a trend.'
     : 'Live numbers still update immediately. Trend labels classify closed price and open-interest moves, with volume tracked as supporting confirmation.',
-  evidence: 'OKX BTC-USDT-SWAP closed windows. Two consecutive matching closes confirm a trend.',
+  evidence: 'OKX BTC-USDT-SWAP closed windows. A single completed window that clears the price and open-interest thresholds confirms a trend.',
 })
 
 export class SignalConfirmation {
@@ -444,22 +444,7 @@ export class SignalConfirmation {
           : `This completed window supports ${evaluation.activeRow!.marketTitle.toLowerCase()} (${evaluation.activeRow!.sentiment.toLowerCase()}). ${volumeNote}`
 
     const id = evaluation.activeRowId
-    const twoBarConfirmedMove =
-      id !== null &&
-      isConsecutive &&
-      ((samePriceSign && twoBarPricePass && twoBarOiPass) ||
-        shallowPullbackContinuation ||
-        (rollingOiPass && this.confirmed?.activeRowId === id))
-
-    if (id !== null) {
-      if (id === this.candidate || twoBarConfirmedMove) {
-        this.completed = Math.min(2, Math.max(this.completed + 1, twoBarConfirmedMove ? 2 : 1))
-      } else {
-        this.completed = 1
-      }
-    } else {
-      this.completed = 0
-    }
+    this.completed = id !== null ? SIGNAL_RULES.confirmations : 0
     this.candidate = id
     const currentRecord: PreviousWindow = {
       start,
@@ -482,17 +467,17 @@ export class SignalConfirmation {
     }
     this.previous = currentRecord
 
-    if (id !== null && this.completed === 2) {
+    if (id !== null) {
       this.confirmed = evaluation
       this.misses = 0
       this.snapshot = { priceStart, priceEnd, deltaBtc, cvdBtc: deltaBtc, volumeBtc: volume }
       this.status = 'confirmed'
-      this.reason = `Two consecutive completed ${this.mode} windows support ${evaluation.activeRow!.marketTitle.toLowerCase()}. ${volumeNote}`
+      this.reason = `The latest completed ${this.mode} window supports ${evaluation.activeRow!.marketTitle.toLowerCase()}. ${volumeNote}`
       this.pulse = {
         ruleId: `confirmed-${id}`,
         observation: `Confirmed ${evaluation.activeRow!.marketTitle.toLowerCase()}`,
         headline: evaluation.activeRow!.marketTitle,
-        copy: `Two consecutive ${this.mode} closes support this price/OI pattern. This is confirmation of observed conditions, not a prediction.`,
+        copy: `The latest ${this.mode} close supports this price/OI pattern. This is confirmation of observed conditions, not a prediction.`,
         evidence: `Latest closed window: price ${pricePct.toFixed(3)}% (minimum ${priceThreshold.toFixed(3)}%) · OI ${oiPct.toFixed(3)}% · volume ${volumePct === null ? 'baseline pending' : `${volumePct.toFixed(1)}% vs prior window`}${deltaBtc !== null ? ` · delta ${deltaBtc.toFixed(4)} BTC` : ''} · close ${new Date(end).toISOString()}`,
       }
     } else {
@@ -501,15 +486,10 @@ export class SignalConfirmation {
         this.confirmed = null
         this.snapshot = emptySnapshot()
       }
-      this.status = id !== null || this.confirmed ? 'pending' : 'mixed'
+      this.status = this.confirmed ? 'pending' : 'mixed'
       if (!this.confirmed) {
         this.pulse = quietPulse(this.status)
-        if (id !== null) {
-          this.pulse.observation = `Candidate: ${evaluation.activeRow!.marketTitle}`
-          this.pulse.headline = `${evaluation.activeRow!.marketTitle}: one close, awaiting second close.`
-        } else {
-          this.pulse.headline = `Price ${evaluation.priceDirection}; open interest ${evaluation.oiDirection}.`
-        }
+        this.pulse.headline = `Price ${evaluation.priceDirection}; open interest ${evaluation.oiDirection}.`
         this.pulse.copy = this.reason
         this.pulse.evidence = `Closed ${new Date(start).toISOString()} to ${new Date(end).toISOString()} · price ${pricePct.toFixed(3)}% · OI ${oiPct.toFixed(3)}% · volume ${volumePct === null ? 'baseline only' : `${volumePct.toFixed(1)}% vs previous window`}`
       }

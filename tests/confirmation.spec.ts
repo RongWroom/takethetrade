@@ -52,7 +52,7 @@ async function feedUntil(page: Page, feed: { socket: () => Socket; now: { value:
   }
 }
 
-test('confirms only after two full matching windows, keeps state across chart switches, and resets on mode change', async ({ page }) => {
+test('confirms after the first full window, keeps state across chart switches, and resets on mode change', async ({ page }) => {
   const feed = await openFakeClockFeed(page)
   await expect(page.getByText('Connected').first()).toBeVisible()
 
@@ -61,10 +61,10 @@ test('confirms only after two full matching windows, keeps state across chart sw
   await expect(page.getByText(/Confirmed ·/)).not.toBeVisible()
 
   await feedUntil(page, feed, B0 + 610_000)
-  await expect(page.getByText(/Pending · Candidate Weak uptrend: 1 of 2 matching 5m closes/)).toBeVisible()
+  await expect(page.getByText(/Confirmed · Weak uptrend: confirmed on the latest 5m close/)).toBeVisible()
 
   await feedUntil(page, feed, B0 + 910_000)
-  await expect(page.getByText(/Confirmed · Weak uptrend: 2 of 2 matching 5m closes/)).toBeVisible()
+  await expect(page.getByText(/Confirmed · Weak uptrend: confirmed on the latest 5m close/)).toBeVisible()
   await expect(page.getByText('Weak uptrend · Bearish').first()).toBeVisible()
   await expect(page.getByText('CONFIRMED', { exact: true }).first()).toBeVisible()
 
@@ -76,10 +76,10 @@ test('confirms only after two full matching windows, keeps state across chart sw
     }),
   )
   await feedUntil(page, feed, capTime + 5_000)
-  await expect(page.getByText(/Confirmed · Weak uptrend: 2 of 2 matching 5m closes/)).toBeVisible()
+  await expect(page.getByText(/Confirmed · Weak uptrend: confirmed on the latest 5m close/)).toBeVisible()
 
   await page.getByRole('button', { name: '15m', exact: true }).click()
-  await expect(page.getByText(/Confirmed · Weak uptrend: 2 of 2 matching 5m closes/)).toBeVisible()
+  await expect(page.getByText(/Confirmed · Weak uptrend: confirmed on the latest 5m close/)).toBeVisible()
   await expect(page.getByRole('button', { name: /Market Pulse \(5m confirmation\)/ })).toBeVisible()
 
   await page.getByRole('button', { name: 'Settings' }).click()
@@ -94,7 +94,7 @@ test('a closed connection invalidates an established confirmation', async ({ pag
   const feed = await openFakeClockFeed(page)
   await expect(page.getByText('Connected').first()).toBeVisible()
   await feedUntil(page, feed, B0 + 910_000)
-  await expect(page.getByText(/Confirmed · Weak uptrend: 2 of 2 matching 5m closes/)).toBeVisible()
+  await expect(page.getByText(/Confirmed · Weak uptrend: confirmed on the latest 5m close/)).toBeVisible()
 
   feed.socket().close()
   await expect(page.getByText(/Insufficient data ·/)).toBeVisible()
@@ -105,7 +105,7 @@ test('switching tabs with continuous messages preserves an established confirmat
   const feed = await openFakeClockFeed(page)
   await expect(page.getByText('Connected').first()).toBeVisible()
   await feedUntil(page, feed, B0 + 910_000)
-  await expect(page.getByText(/Confirmed · Weak uptrend: 2 of 2 matching 5m closes/)).toBeVisible()
+  await expect(page.getByText(/Confirmed · Weak uptrend: confirmed on the latest 5m close/)).toBeVisible()
 
   await page.evaluate(() => {
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' })
@@ -117,14 +117,14 @@ test('switching tabs with continuous messages preserves an established confirmat
     document.dispatchEvent(new Event('visibilitychange'))
   })
   await feedUntil(page, feed, B0 + 930_000)
-  await expect(page.getByText(/Confirmed · Weak uptrend: 2 of 2 matching 5m closes/)).toBeVisible()
+  await expect(page.getByText(/Confirmed · Weak uptrend: confirmed on the latest 5m close/)).toBeVisible()
 })
 
 test('a pause longer than 30 seconds without messages restarts confirmation', async ({ page }) => {
   const feed = await openFakeClockFeed(page)
   await expect(page.getByText('Connected').first()).toBeVisible()
   await feedUntil(page, feed, B0 + 910_000)
-  await expect(page.getByText(/Confirmed · Weak uptrend: 2 of 2 matching 5m closes/)).toBeVisible()
+  await expect(page.getByText(/Confirmed · Weak uptrend: confirmed on the latest 5m close/)).toBeVisible()
 
   await page.clock.runFor(40_000)
   feed.now.value += 40_000
@@ -138,10 +138,10 @@ test('sparse on-change open interest (once per minute) still evaluates and confi
   sendOi(feed, feed.now.value)
 
   await feedUntil(page, feed, B0 + 610_000, 60_000)
-  await expect(page.getByText(/Pending · Candidate Weak uptrend: 1 of 2 matching 5m closes/)).toBeVisible()
+  await expect(page.getByText(/Confirmed · Weak uptrend: confirmed on the latest 5m close/)).toBeVisible()
 
   await feedUntil(page, feed, B0 + 910_000, 60_000)
-  await expect(page.getByText(/Confirmed · Weak uptrend: 2 of 2 matching 5m closes/)).toBeVisible()
+  await expect(page.getByText(/Confirmed · Weak uptrend: confirmed on the latest 5m close/)).toBeVisible()
   await expect(page.getByText(/Valid windows 2 · rejected 0/).first()).toBeVisible()
 })
 
@@ -160,7 +160,7 @@ test('open interest refreshed over REST every 30 seconds confirms without WebSoc
   )
 
   await feedUntil(page, feed, B0 + 910_000, null)
-  await expect(page.getByText(/Confirmed · Weak uptrend: 2 of 2 matching 5m closes/)).toBeVisible()
+  await expect(page.getByText(/Confirmed · Weak uptrend: confirmed on the latest 5m close/)).toBeVisible()
 })
 
 test('missing open interest shows the specific reason and the next close instead of a flat reading', async ({ page }) => {

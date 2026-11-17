@@ -18,7 +18,7 @@ See [MILESTONES.md](MILESTONES.md) for progress. Each milestone requires review 
 
 ## Signal confirmation
 
-Market Pulse and the regime matrix use closed, fixed UTC windows of 5 or 15 minutes, chosen in Settings and independent of the chart timeframe. Trade coverage must reach both ends of each window, and open interest is held from its last OKX update (WebSocket on change, plus a public REST refresh every 30 seconds) and not used once older than 90 seconds. Two matching valid closes are required to confirm; a strong label also needs volume to rise at least 10% against a prior valid window. These thresholds are uncalibrated defaults rather than tested market-wide values. Interruptions of the feed restart confirmation; switching browser tabs alone does not. Live price, delta and liquidation figures are unaffected by this logic.
+Market Pulse and the regime matrix use closed, fixed UTC windows of 5 or 15 minutes, chosen in Settings and independent of the chart timeframe. Trade coverage must reach both ends of each window, and open interest is held from its last OKX update (WebSocket on change, plus a public REST refresh every 30 seconds) and not used once older than 90 seconds. A single valid close that clears the price and open-interest thresholds confirms; a strong label also needs volume to rise at least 10% against a prior valid window. These thresholds are uncalibrated defaults rather than tested market-wide values. Interruptions of the feed restart confirmation; switching browser tabs alone does not. Live price, delta and liquidation figures are unaffected by this logic.
 
 ## Provider diagnostic
 

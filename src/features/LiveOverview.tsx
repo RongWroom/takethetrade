@@ -40,6 +40,38 @@ import type { Metric } from '../fixtures/demo'
 
 const minute = 60_000
 
+const OI_SAMPLES_KEY = 'ttt.oiSamples.v1'
+const OI_SAMPLES_MAX = 240
+const OI_SAMPLES_MAX_AGE_MS = 2 * 60 * minute
+
+type OiSample = { time: number; btc: number }
+
+export function loadOiSamples(now: number): OiSample[] {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(OI_SAMPLES_KEY) ?? '[]')
+    if (!Array.isArray(parsed)) return []
+    const out: OiSample[] = []
+    for (const row of parsed as Partial<OiSample>[]) {
+      const { time, btc } = row ?? {}
+      if (typeof time !== 'number' || typeof btc !== 'number' || !Number.isFinite(time) || !Number.isFinite(btc) || btc <= 0) continue
+      if (time > now + 60_000 || now - time > OI_SAMPLES_MAX_AGE_MS) continue
+      if (out.length > 0 && time <= out[out.length - 1].time) continue
+      out.push({ time, btc })
+    }
+    return out
+  } catch {
+    return []
+  }
+}
+
+function saveOiSamples(samples: readonly OiSample[]) {
+  try {
+    localStorage.setItem(OI_SAMPLES_KEY, JSON.stringify(samples.slice(-OI_SAMPLES_MAX)))
+  } catch {
+    return
+  }
+}
+
 const formatSignedBtc = (n: bigint) => {
   const sign = n < 0n ? '-' : '+'
   const abs = n < 0n ? -n : n
@@ -485,12 +517,19 @@ export function buildConfirmationSeeds(params: {
   duration: number
   candles: readonly OkxCandlePoint[]
   takerBuckets: readonly OkxTakerVolumeBucket[]
-  oiPoints: readonly OkxOiHistoryPoint[]
+  oiPoints?: readonly OkxOiHistoryPoint[]
+  oiSamples?: readonly { time: number; btc: number }[]
 }): HistoricalWindowSeed[] {
-  const { now, duration, candles, takerBuckets, oiPoints } = params
+  const { now, duration, candles, takerBuckets, oiPoints = [], oiSamples = [] } = params
   const currentStart = Math.floor(now / duration) * duration
   const closedCandles = candles.filter(c => c.time + duration <= currentStart).slice(-4)
-  if (closedCandles.length === 0 || oiPoints.length < 2) return []
+  if (closedCandles.length === 0 || (oiPoints.length < 2 && oiSamples.length < 2)) return []
+
+  const sampleAt = (t: number) => {
+    let found: { time: number; btc: number } | null = null
+    for (const s of oiSamples) if (s.time <= t && (!found || s.time > found.time)) found = s
+    return found && t - found.time <= SIGNAL_RULES.maximumOiAgeMs ? found : null
+  }
 
   const takerMap = new Map<number, OkxTakerVolumeBucket>()
   for (const tb of takerBuckets) takerMap.set(tb.time, tb)
@@ -502,11 +541,21 @@ export function buildConfirmationSeeds(params: {
   for (const c of closedCandles) {
     const start = c.time
     const end = start + duration
-    const currOi = oiMap.get(start) ?? oiMap.get(end)
-    const prevOi = oiMap.get(start - duration)
-    if (!currOi || !prevOi || currOi.time === prevOi.time || c.close <= 0) continue
-    const oiStartBtc = prevOi.oiUsd / c.close
-    const oiEndBtc = currOi.oiUsd / c.close
+    let oiStartBtc: number
+    let oiEndBtc: number
+    if (oiSamples.length >= 2) {
+      const first = sampleAt(start)
+      const last = sampleAt(end)
+      if (!first || !last || first.time === last.time || c.close <= 0) continue
+      oiStartBtc = first.btc
+      oiEndBtc = last.btc
+    } else {
+      const currOi = oiMap.get(start) ?? oiMap.get(end)
+      const prevOi = oiMap.get(start - duration)
+      if (!currOi || !prevOi || currOi.time === prevOi.time || c.close <= 0) continue
+      oiStartBtc = prevOi.oiUsd / c.close
+      oiEndBtc = currOi.oiUsd / c.close
+    }
     const taker = takerMap.get(start)
     const volumeBtc = taker ? taker.volumeBtc : c.volumeBtc
     const deltaBtc = taker ? taker.deltaBtc : null
@@ -607,6 +656,11 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
     let oiInitial: number | null = null
     let oiTime: number | null = null
     const oiHistory: { time: number; btc: number }[] = []
+    const persistedOi = loadOiSamples(Date.now())
+    const allOiSamples = () => {
+      const firstLive = oiHistory[0]?.time ?? Infinity
+      return [...persistedOi.filter(p => p.time < firstLive), ...oiHistory]
+    }
     let oiRefreshing = false
     const acceptOi = (sample: { btc: string; time: number }, allowRefreshAtNow = false) => {
       const num = Number(sample.btc)
@@ -623,6 +677,7 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
       if (oiInitial === null) oiInitial = num
       oiHistory.push({ time: effectiveTime, btc: num })
       if (oiHistory.length > 120) oiHistory.shift()
+      saveOiSamples(allOiSamples())
       trackerRef.current?.openInterest({ time: effectiveTime, btc: num }, now)
       return true
     }
@@ -770,22 +825,6 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
         gap,
       })
 
-      const confMode = confirmationModeRef.current
-      const confCached = backfillRef.current[confMode]
-      if (confCached) {
-        const confDuration = confMode === '15m' ? 900_000 : 300_000
-        const seeds = buildConfirmationSeeds({
-          now,
-          duration: confDuration,
-          candles: confCached.candles,
-          takerBuckets: confCached.takerBuckets,
-          oiPoints: confCached.oiPoints,
-        })
-        if (seeds.length > 0 && tracker.seedHistory(seeds, now) && oi !== null && oiTime !== null) {
-          tracker.openInterest({ time: oiTime, btc: Number(oi) }, now)
-        }
-      }
-
       if (effectiveStatus === 'Connected' && !oiStale) {
         feedEverReady = true
       }
@@ -805,6 +844,22 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
                 ? 'Latest open-interest snapshot is older than 90 seconds.'
                 : undefined
       const trackerHealthy = (effectiveStatus === 'Connected' && !oiStale) || inInitialHandshake
+
+      const confMode = confirmationModeRef.current
+      const confCached = backfillRef.current[confMode]
+      if (confCached && trackerHealthy) {
+        const seeds = buildConfirmationSeeds({
+          now,
+          duration: confMode === '15m' ? 900_000 : 300_000,
+          candles: confCached.candles,
+          takerBuckets: confCached.takerBuckets,
+          oiSamples: allOiSamples(),
+        })
+        if (seeds.length > 0 && tracker.seedHistory(seeds, now) && oi !== null && oiTime !== null) {
+          tracker.openInterest({ time: oiTime, btc: Number(oi) }, now)
+        }
+      }
+
       const confirmation = tracker.view(now, trackerHealthy, trackerHealthy ? undefined : healthReason)
       const oiRegime =
         confirmation.confirmed ??
@@ -1107,7 +1162,7 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
             ).then(r => (r.ok ? r.json() : null))
           : Promise.resolve(null)
 
-        const [candleJson, takerJson, oiJson] = await Promise.all([candleReq, takerReq, oiReq])
+        const [candleJson, takerJson, oiJson] = await Promise.all([candleReq, takerReq, oiReq].map(req => req.catch(() => null)))
         if (cancelled) return
 
         const candles = normalizeOkxCandles(candleJson?.data)
