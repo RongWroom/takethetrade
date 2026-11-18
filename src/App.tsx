@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import { TIMEFRAME_OPTIONS, type TimeframeId } from './data/okx'
+import { getTimeframeOption, TIMEFRAME_OPTIONS, type TimeframeId } from './data/okx'
 import { OI_CHEAT_SHEET_ROWS, type CvdMedianProfile } from './domain/tradeEngine'
 import { useLiveMarketData } from './features/LiveOverview'
 import { LIQUIDATION_LARGE_USD, SIGNAL_RULES } from './domain/signalConfirmation'
 import { describeConfirmation } from './features/confirmationLabels'
+import { FolderShell, FootprintTab, type FolderTabDef, type FolderTone } from './features/FootprintTab'
 import { MarketStory } from './features/MarketStory'
 import { MyTradePanel } from './features/MyTradePanel'
 import { useConfirmationPreference } from './features/useConfirmationPreference'
@@ -65,7 +66,14 @@ function CvdMedianChart({ profile, bucketSuffix = 'm' }: { profile: CvdMedianPro
   )
 }
 
+function toFolderTone(tone: string | undefined): FolderTone {
+  if (tone === 'teal' || tone === 'rose' || tone === 'amber' || tone === 'blue') return tone
+  return 'blue'
+}
+
 function App() {
+  const [activeTab, setActiveTab] = useState<'overview' | 'footprint'>('overview')
+  const [overviewFolder, setOverviewFolder] = useState<'story' | 'metrics' | 'pulse'>('story')
   const [panel, setPanel] = useState<Panel>(null)
   const [focus, setFocus] = useState(false)
   const [timeframe, setTimeframe] = useState<TimeframeId>('1m')
@@ -135,10 +143,43 @@ function App() {
           ? 'How it works'
           : 'Settings'
 
+  const overviewTabs: readonly FolderTabDef<'story' | 'metrics' | 'pulse'>[] = [
+    {
+      id: 'story',
+      tabId: 'ov-tab-story',
+      panelId: 'ov-panel-story',
+      label: 'Story Timeline',
+      badge: live.story.buckets[live.story.buckets.length - 1]?.phaseLabel ?? 'Waiting',
+      tone: toFolderTone(live.story.tone),
+    },
+    {
+      id: 'metrics',
+      tabId: 'ov-tab-metrics',
+      panelId: 'ov-panel-metrics',
+      label: 'Flow Metrics',
+      badge: live.metrics[0]?.value ?? '4 cards',
+      tone: toFolderTone(live.metrics[0]?.color ?? 'teal'),
+    },
+    {
+      id: 'pulse',
+      tabId: 'ov-tab-pulse',
+      panelId: 'ov-panel-pulse',
+      label: 'Pulse & OI Matrix',
+      badge: live.oiRegime.activeRow
+        ? `${live.oiRegime.activeRow.marketTitle} · ${live.oiRegime.activeRow.sentiment}`
+        : confirmationInfo.status,
+      tone: live.oiRegime.activeRow
+        ? live.oiRegime.activeRow.sentiment === 'Bullish'
+          ? 'teal'
+          : 'rose'
+        : 'blue',
+    },
+  ]
+
   return (
     <div className="app">
       <header className="topbar">
-        <a className="brand" href="#overview">
+        <a className="brand" href="#overview" onClick={() => setActiveTab('overview')}>
           <span className="brand-mark">→</span>
           <span>
             TAKE THE TRADE
@@ -146,9 +187,22 @@ function App() {
           </span>
         </a>
         <nav aria-label="Main navigation">
-          <a className="active" href="#overview">
+          <button
+            type="button"
+            className={activeTab === 'overview' ? 'active' : ''}
+            aria-current={activeTab === 'overview' ? 'page' : undefined}
+            onClick={() => setActiveTab('overview')}
+          >
             Overview
-          </a>
+          </button>
+          <button
+            type="button"
+            className={activeTab === 'footprint' ? 'active' : ''}
+            aria-current={activeTab === 'footprint' ? 'page' : undefined}
+            onClick={() => setActiveTab('footprint')}
+          >
+            Footprint
+          </button>
           <button onClick={() => setPanel('events')}>
             Events <span className="nav-count">{visibleEvents.length}</span>
           </button>
@@ -183,7 +237,11 @@ function App() {
       <main id="overview" className="container">
         <div className="intro">
           <div>
-            <p className="eyebrow">YOUR MARKET OVERVIEW · {timeframe.toUpperCase()} WINDOW</p>
+            <p className="eyebrow">
+              {activeTab === 'footprint'
+                ? `YOUR FOOTPRINT ARENA · ${timeframe.toUpperCase()} WINDOW`
+                : `YOUR MARKET OVERVIEW · ${timeframe.toUpperCase()} WINDOW`}
+            </p>
             <h1>Clarity in the flow.</h1>
             <p className="muted">Plain-English order flow for buyers and sellers.</p>
           </div>
@@ -199,259 +257,304 @@ function App() {
             </small>
           </div>
         </div>
-        <MarketStory
-          story={live.story}
-          timeframeShort={timeframe}
-          confirmedTitle={live.oiRegime.activeRow?.marketTitle ?? null}
-          confirmedSentiment={live.oiRegime.activeRow?.sentiment ?? null}
-          confirmationStatus={confirmationInfo.status}
-          focus={focus}
-          onOpenGuide={() => setPanel('guide')}
-        />
-        <div className="section-heading">
-          <div>
-            <p className="eyebrow">THE BIG PICTURE</p>
-            <h2>Order flow at a glance</h2>
-          </div>
-          <span className="muted section-note">
-            {live.timeframeLabel} window · Anchor {new Date(live.anchor).toISOString().slice(11, 16)} UTC · tap any box to flip
-          </span>
-        </div>
-        <div className="grid">
-          {live.metrics.map(m => {
-            const isFlipped = Boolean(flippedCards[m.id])
-            return (
+        {activeTab === 'footprint' ? (
+          <FootprintTab
+            trades={live.trades}
+            timeframeShort={timeframe}
+            timeframeLabel={live.timeframeLabel}
+            bucketMs={getTimeframeOption(timeframe).bucketMs}
+            status={live.status}
+            updated={live.updated}
+          />
+        ) : (
+          <>
+            <FolderShell
+              label="Overview sections"
+              tabs={overviewTabs}
+              activeId={overviewFolder}
+              onSelect={setOverviewFolder}
+            >
               <div
-                key={m.id}
-                role="button"
-                tabIndex={0}
-                aria-label={`Flip ${m.label} card`}
-                className={`metric ${m.color} ${isFlipped ? 'is-flipped' : ''}`}
-                onClick={() => toggleFlip(m.id)}
-                onKeyDown={e => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault()
-                    toggleFlip(m.id)
-                  }
-                }}
+                role="tabpanel"
+                id="ov-panel-story"
+                aria-labelledby="ov-tab-story"
+                className="folder-panel"
+                hidden={overviewFolder !== 'story'}
               >
-                <span className="card-head">
-                  <span>
-                    {m.label}
-                    <small className="flip-hint">{isFlipped ? ' · Flipped ↺' : ' · Flip ↻'}</small>
-                  </span>
-                  <button
-                    type="button"
-                    className="icon-detail-btn"
-                    aria-label={`Open ${m.label} details`}
-                    onClick={e => {
-                      e.stopPropagation()
-                      setPanel(m.id)
-                    }}
-                  >
-                    →
-                  </button>
-                </span>
-                {!isFlipped ? (
-                  <>
-                    <strong>{m.value}</strong>
-                    {!focus && (
-                      <>
-                        <span className="chart" aria-hidden="true">
-                          {m.bars.map((h, i) => (
-                            <i key={i} style={{ height: `${h}%`, opacity: 0.5 + i / 24 }} />
-                          ))}
-                        </span>
-                        <span className="card-foot">
-                          <span>{m.description}</span>
-                          <span
-                            className="detail-trigger"
-                            onClick={e => {
-                              e.stopPropagation()
-                              setPanel(m.id)
-                            }}
-                          >
-                            View details →
-                          </span>
-                        </span>
-                      </>
-                    )}
-                  </>
-                ) : (
-                  <div className="card-back">
-                    {m.id === 'cvd' && m.cvdMedian ? (
-                      <>
-                        <div className="card-back-top">
-                          <strong>{m.value}</strong>
-                          <span className="exo-tag">ExoCharts Median View</span>
-                        </div>
-                        <CvdMedianChart profile={m.cvdMedian} />
-                        <p className="plain-explain">{m.cvdMedian.summary}</p>
-                      </>
-                    ) : (
-                      <>
-                        <div className="card-back-top">
-                          <strong>{m.value}</strong>
-                          <span className="exo-tag">Plain English</span>
-                        </div>
-                        <p className="plain-explain">{m.plainSummary ?? m.detail}</p>
-                        {m.id === 'oi' && live.oiRegime.activeRow && (
-                          <div className={`regime-mini-pill ${live.oiRegime.activeRow.sentiment.toLowerCase()}`}>
-                            {live.oiRegime.activeRow.marketTitle} — {live.oiRegime.activeRow.sentiment}
-                          </div>
-                        )}
-                      </>
-                    )}
-                    {!focus && (
-                      <span className="card-foot">
-                        <span>Tap to flip back ↺</span>
-                        <span
-                          className="detail-trigger"
-                          onClick={e => {
-                            e.stopPropagation()
-                            setPanel(m.id)
+                <MarketStory
+                  story={live.story}
+                  timeframeShort={timeframe}
+                  confirmedTitle={live.oiRegime.activeRow?.marketTitle ?? null}
+                  confirmedSentiment={live.oiRegime.activeRow?.sentiment ?? null}
+                  confirmationStatus={confirmationInfo.status}
+                  focus={focus}
+                  onOpenGuide={() => setPanel('guide')}
+                />
+              </div>
+              <div
+                role="tabpanel"
+                id="ov-panel-metrics"
+                aria-labelledby="ov-tab-metrics"
+                className="folder-panel"
+                hidden={overviewFolder !== 'metrics'}
+              >
+                <div className="folder-surface">
+                  <div className="section-heading">
+                    <div>
+                      <p className="eyebrow">THE BIG PICTURE</p>
+                      <h2>Order flow at a glance</h2>
+                    </div>
+                    <span className="muted section-note">
+                      {live.timeframeLabel} window · Anchor {new Date(live.anchor).toISOString().slice(11, 16)} UTC · tap any box to flip
+                    </span>
+                  </div>
+                  <div className="grid">
+                    {live.metrics.map(m => {
+                      const isFlipped = Boolean(flippedCards[m.id])
+                      return (
+                        <div
+                          key={m.id}
+                          role="button"
+                          tabIndex={0}
+                          aria-label={`Flip ${m.label} card`}
+                          className={`metric ${m.color} ${isFlipped ? 'is-flipped' : ''}`}
+                          onClick={() => toggleFlip(m.id)}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault()
+                              toggleFlip(m.id)
+                            }
                           }}
                         >
-                          View details →
+                          <span className="card-head">
+                            <span>
+                              {m.label}
+                              <small className="flip-hint">{isFlipped ? ' · Flipped ↺' : ' · Flip ↻'}</small>
+                            </span>
+                            <button
+                              type="button"
+                              className="icon-detail-btn"
+                              aria-label={`Open ${m.label} details`}
+                              onClick={e => {
+                                e.stopPropagation()
+                                setPanel(m.id)
+                              }}
+                            >
+                              →
+                            </button>
+                          </span>
+                          {!isFlipped ? (
+                            <>
+                              <strong>{m.value}</strong>
+                              {!focus && (
+                                <>
+                                  <span className="chart" aria-hidden="true">
+                                    {m.bars.map((h, i) => (
+                                      <i key={i} style={{ height: `${h}%`, opacity: 0.5 + i / 24 }} />
+                                    ))}
+                                  </span>
+                                  <span className="card-foot">
+                                    <span>{m.description}</span>
+                                    <span
+                                      className="detail-trigger"
+                                      onClick={e => {
+                                        e.stopPropagation()
+                                        setPanel(m.id)
+                                      }}
+                                    >
+                                      View details →
+                                    </span>
+                                  </span>
+                                </>
+                              )}
+                            </>
+                          ) : (
+                            <div className="card-back">
+                              {m.id === 'cvd' && m.cvdMedian ? (
+                                <>
+                                  <div className="card-back-top">
+                                    <strong>{m.value}</strong>
+                                    <span className="exo-tag">ExoCharts Median View</span>
+                                  </div>
+                                  <CvdMedianChart profile={m.cvdMedian} />
+                                  <p className="plain-explain">{m.cvdMedian.summary}</p>
+                                </>
+                              ) : (
+                                <>
+                                  <div className="card-back-top">
+                                    <strong>{m.value}</strong>
+                                    <span className="exo-tag">Plain English</span>
+                                  </div>
+                                  <p className="plain-explain">{m.plainSummary ?? m.detail}</p>
+                                  {m.id === 'oi' && live.oiRegime.activeRow && (
+                                    <div className={`regime-mini-pill ${live.oiRegime.activeRow.sentiment.toLowerCase()}`}>
+                                      {live.oiRegime.activeRow.marketTitle} — {live.oiRegime.activeRow.sentiment}
+                                    </div>
+                                  )}
+                                </>
+                              )}
+                              {!focus && (
+                                <span className="card-foot">
+                                  <span>Tap to flip back ↺</span>
+                                  <span
+                                    className="detail-trigger"
+                                    onClick={e => {
+                                      e.stopPropagation()
+                                      setPanel(m.id)
+                                    }}
+                                  >
+                                    View details →
+                                  </span>
+                                </span>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              </div>
+              <div
+                role="tabpanel"
+                id="ov-panel-pulse"
+                aria-labelledby="ov-tab-pulse"
+                className="folder-panel"
+                hidden={overviewFolder !== 'pulse'}
+              >
+                <div className="folder-surface">
+                  <div className={`synthesis-grid ${focus ? 'is-focus' : ''}`}>
+                    <button className="pulse" onClick={() => setPanel('pulse')}>
+                      <span className="pulse-head">
+                        <span>
+                          <span className="pulse-icon">•</span> Market Pulse ({confirmationMode} confirmation)
                         </span>
+                        <span className="observation">{live.pulse.observation}</span>
                       </span>
+                      <strong>{live.pulse.headline}</strong>
+                      <span className="pulse-copy">{live.pulse.copy}</span>
+                      <span className="oi-mini-note">{confirmationInfo.status} · {confirmationInfo.progress}</span>
+                      <span className="oi-mini-note">{confirmationInfo.detail}</span>
+                      <span className="oi-mini-note">{confirmationInfo.reason}</span>
+                      <span className="pulse-link">
+                        Explore the evidence <span>→</span>
+                      </span>
+                    </button>
+
+                    {!focus && (
+                      <section className="oi-matrix-section" aria-label="Open Interest Cheat Sheet Calculator">
+                        <div className="oi-matrix-header">
+                          <div>
+                            <p className="eyebrow">OPEN INTEREST CALCULATOR · {confirmationMode.toUpperCase()} CONFIRMATION</p>
+                            <h2>Price, Volume &amp; Open Interest Matrix</h2>
+                          </div>
+                          <div className="oi-live-verdict">
+                            {live.oiRegime.activeRow ? (
+                              <span className={`verdict-pill ${live.oiRegime.activeRow.sentiment.toLowerCase()}`}>
+                                {live.oiRegime.activeRow.marketTitle} · {live.oiRegime.activeRow.sentiment}
+                              </span>
+                            ) : (
+                              <span className="verdict-pill neutral">{confirmationInfo.status}</span>
+                            )}
+                          </div>
+                        </div>
+                        <p className="oi-mini-note">{confirmationInfo.progress}</p>
+                        <p className="oi-mini-note">{confirmationInfo.detail}</p>
+                        <p className="oi-mini-note">{confirmationInfo.reason}</p>
+                        <p className="oi-mini-note">
+                          {observed === null ? 'No closed window yet' : live.confirmation.status === 'insufficient' ? 'Last observed window (feed interrupted, not live)' : 'Latest closed window'}
+                        </p>
+
+                        <div className="oi-live-strip">
+                          <div className="oi-signal-pill">
+                            <small>Price</small>
+                            <strong className={observed?.priceDirection === 'rising' ? 'up' : observed?.priceDirection === 'declining' ? 'down' : ''}>
+                              {observed === null ? 'Awaiting a closed window' : observed.priceDirection === 'rising' ? '↑ rising' : observed.priceDirection === 'declining' ? '↓ declining' : '→ flat'}
+                            </strong>
+                          </div>
+                          <div className="oi-signal-pill">
+                            <small>Volume</small>
+                            <strong className={observed?.volumeDirection === 'increasing' ? 'up' : observed?.volumeDirection === 'decreasing' ? 'down' : ''}>
+                              {observed === null ? 'Awaiting a closed window' : observed.volumeDirection === 'increasing' ? '↑ increasing' : observed.volumeDirection === 'decreasing' ? '↓ decreasing' : '→ flat'}
+                            </strong>
+                          </div>
+                          <div className="oi-signal-pill">
+                            <small>Open interest</small>
+                            <strong className={observed?.oiDirection === 'increasing' ? 'up' : observed?.oiDirection === 'decreasing' ? 'down' : ''}>
+                              {observed === null ? 'Awaiting a closed window' : observed.oiDirection === 'increasing' ? '↑ increasing' : observed.oiDirection === 'decreasing' ? '↓ decreasing' : '→ flat'}
+                            </strong>
+                          </div>
+                          <div className="oi-signal-pill verdict-cell">
+                            <small>Market</small>
+                            <strong>
+                              {live.oiRegime.activeRow
+                                ? `${live.oiRegime.activeRow.marketTitle} - ${live.oiRegime.activeRow.sentiment}`
+                                : observed
+                                  ? 'Mixed / flat'
+                                  : 'Baseline...'}
+                            </strong>
+                          </div>
+                        </div>
+
+                        {live.oiRegime.activeRow && !showFullMatrix && (
+                          <div className="oi-active-summary">
+                            <span className="live-match-badge">{regimeBadge}</span>
+                            <p>{live.oiRegime.activeRow.plainEnglish}</p>
+                          </div>
+                        )}
+
+                        <div className="oi-matrix-toggle-bar">
+                          <span className="oi-mini-note">{live.oiRegime.continuationNote}</span>
+                          <button
+                            type="button"
+                            className="matrix-toggle-btn"
+                            aria-expanded={showFullMatrix}
+                            onClick={() => setShowFullMatrix(prev => !prev)}
+                          >
+                            {showFullMatrix ? 'Hide reference table ↑' : 'Cheat sheet (4 regimes) ↓'}
+                          </button>
+                        </div>
+
+                        {showFullMatrix && (
+                          <div className="oi-cheat-table">
+                            <div className="oi-table-cols" aria-hidden="true">
+                              <span>Price</span>
+                              <span>Volume</span>
+                              <span>Open interest</span>
+                              <span>Market</span>
+                            </div>
+                            {OI_CHEAT_SHEET_ROWS.map(row => {
+                              const isActive = live.oiRegime.activeRowId === row.id
+                              return (
+                                <div key={row.id} className={`oi-cheat-row ${isActive ? 'active' : ''}`}>
+                                  <div className="oi-row-signals">
+                                    <span className={`sig ${row.priceLabel === 'rising' ? 'up' : 'down'}`}>
+                                      <i>{row.priceLabel === 'rising' ? '↑' : '↓'}</i> {row.priceLabel}
+                                    </span>
+                                    <span className={`sig ${row.volumeLabel === 'increasing' ? 'up' : 'down'}`}>
+                                      <i>{row.volumeLabel === 'increasing' ? '↑' : '↓'}</i> {row.volumeLabel}
+                                    </span>
+                                    <span className={`sig ${row.oiLabel === 'increasing' ? 'up' : 'down'}`}>
+                                      <i>{row.oiLabel === 'increasing' ? '↑' : '↓'}</i> {row.oiLabel}
+                                    </span>
+                                    <span className="sig-market">
+                                      <strong>{row.marketTitle}</strong> -{' '}
+                                      <em className={row.sentiment.toLowerCase()}>{row.sentiment}</em>
+                                      {isActive && <span className="live-match-badge">{regimeBadge}</span>}
+                                    </span>
+                                  </div>
+                                  <p className="oi-row-desc">{row.plainEnglish}</p>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        )}
+                      </section>
                     )}
                   </div>
-                )}
-              </div>
-            )
-          })}
-        </div>
-
-        <div className={`synthesis-grid ${focus ? 'is-focus' : ''}`}>
-          <button className="pulse" onClick={() => setPanel('pulse')}>
-            <span className="pulse-head">
-              <span>
-                <span className="pulse-icon">•</span> Market Pulse ({confirmationMode} confirmation)
-              </span>
-              <span className="observation">{live.pulse.observation}</span>
-            </span>
-            <strong>{live.pulse.headline}</strong>
-            <span className="pulse-copy">{live.pulse.copy}</span>
-            <span className="oi-mini-note">{confirmationInfo.status} · {confirmationInfo.progress}</span>
-            <span className="oi-mini-note">{confirmationInfo.detail}</span>
-            <span className="oi-mini-note">{confirmationInfo.reason}</span>
-            <span className="pulse-link">
-              Explore the evidence <span>→</span>
-            </span>
-          </button>
-
-          {!focus && (
-            <section className="oi-matrix-section" aria-label="Open Interest Cheat Sheet Calculator">
-              <div className="oi-matrix-header">
-                <div>
-                  <p className="eyebrow">OPEN INTEREST CALCULATOR · {confirmationMode.toUpperCase()} CONFIRMATION</p>
-                  <h2>Price, Volume &amp; Open Interest Matrix</h2>
-                </div>
-                <div className="oi-live-verdict">
-                  {live.oiRegime.activeRow ? (
-                    <span className={`verdict-pill ${live.oiRegime.activeRow.sentiment.toLowerCase()}`}>
-                      {live.oiRegime.activeRow.marketTitle} · {live.oiRegime.activeRow.sentiment}
-                    </span>
-                  ) : (
-                    <span className="verdict-pill neutral">{confirmationInfo.status}</span>
-                  )}
                 </div>
               </div>
-              <p className="oi-mini-note">{confirmationInfo.progress}</p>
-              <p className="oi-mini-note">{confirmationInfo.detail}</p>
-              <p className="oi-mini-note">{confirmationInfo.reason}</p>
-              <p className="oi-mini-note">
-                {observed === null ? 'No closed window yet' : live.confirmation.status === 'insufficient' ? 'Last observed window (feed interrupted, not live)' : 'Latest closed window'}
-              </p>
-
-              <div className="oi-live-strip">
-                <div className="oi-signal-pill">
-                  <small>Price</small>
-                  <strong className={observed?.priceDirection === 'rising' ? 'up' : observed?.priceDirection === 'declining' ? 'down' : ''}>
-                    {observed === null ? 'Awaiting a closed window' : observed.priceDirection === 'rising' ? '↑ rising' : observed.priceDirection === 'declining' ? '↓ declining' : '→ flat'}
-                  </strong>
-                </div>
-                <div className="oi-signal-pill">
-                  <small>Volume</small>
-                  <strong className={observed?.volumeDirection === 'increasing' ? 'up' : observed?.volumeDirection === 'decreasing' ? 'down' : ''}>
-                    {observed === null ? 'Awaiting a closed window' : observed.volumeDirection === 'increasing' ? '↑ increasing' : observed.volumeDirection === 'decreasing' ? '↓ decreasing' : '→ flat'}
-                  </strong>
-                </div>
-                <div className="oi-signal-pill">
-                  <small>Open interest</small>
-                  <strong className={observed?.oiDirection === 'increasing' ? 'up' : observed?.oiDirection === 'decreasing' ? 'down' : ''}>
-                    {observed === null ? 'Awaiting a closed window' : observed.oiDirection === 'increasing' ? '↑ increasing' : observed.oiDirection === 'decreasing' ? '↓ decreasing' : '→ flat'}
-                  </strong>
-                </div>
-                <div className="oi-signal-pill verdict-cell">
-                  <small>Market</small>
-                  <strong>
-                    {live.oiRegime.activeRow
-                      ? `${live.oiRegime.activeRow.marketTitle} - ${live.oiRegime.activeRow.sentiment}`
-                      : observed
-                        ? 'Mixed / flat'
-                        : 'Baseline...'}
-                  </strong>
-                </div>
-              </div>
-
-              {live.oiRegime.activeRow && !showFullMatrix && (
-                <div className="oi-active-summary">
-                  <span className="live-match-badge">{regimeBadge}</span>
-                  <p>{live.oiRegime.activeRow.plainEnglish}</p>
-                </div>
-              )}
-
-              <div className="oi-matrix-toggle-bar">
-                <span className="oi-mini-note">{live.oiRegime.continuationNote}</span>
-                <button
-                  type="button"
-                  className="matrix-toggle-btn"
-                  aria-expanded={showFullMatrix}
-                  onClick={() => setShowFullMatrix(prev => !prev)}
-                >
-                  {showFullMatrix ? 'Hide reference table ↑' : 'Cheat sheet (4 regimes) ↓'}
-                </button>
-              </div>
-
-              {showFullMatrix && (
-                <div className="oi-cheat-table">
-                  <div className="oi-table-cols" aria-hidden="true">
-                    <span>Price</span>
-                    <span>Volume</span>
-                    <span>Open interest</span>
-                    <span>Market</span>
-                  </div>
-                  {OI_CHEAT_SHEET_ROWS.map(row => {
-                    const isActive = live.oiRegime.activeRowId === row.id
-                    return (
-                      <div key={row.id} className={`oi-cheat-row ${isActive ? 'active' : ''}`}>
-                        <div className="oi-row-signals">
-                          <span className={`sig ${row.priceLabel === 'rising' ? 'up' : 'down'}`}>
-                            <i>{row.priceLabel === 'rising' ? '↑' : '↓'}</i> {row.priceLabel}
-                          </span>
-                          <span className={`sig ${row.volumeLabel === 'increasing' ? 'up' : 'down'}`}>
-                            <i>{row.volumeLabel === 'increasing' ? '↑' : '↓'}</i> {row.volumeLabel}
-                          </span>
-                          <span className={`sig ${row.oiLabel === 'increasing' ? 'up' : 'down'}`}>
-                            <i>{row.oiLabel === 'increasing' ? '↑' : '↓'}</i> {row.oiLabel}
-                          </span>
-                          <span className="sig-market">
-                            <strong>{row.marketTitle}</strong> -{' '}
-                            <em className={row.sentiment.toLowerCase()}>{row.sentiment}</em>
-                            {isActive && <span className="live-match-badge">{regimeBadge}</span>}
-                          </span>
-                        </div>
-                        <p className="oi-row-desc">{row.plainEnglish}</p>
-                      </div>
-                    )
-                  })}
-                </div>
-              )}
-            </section>
-          )}
-        </div>
+            </FolderShell>
 
         {!focus && (
           <div className="bottom-row">
@@ -479,6 +582,8 @@ function App() {
               <span className="arrow">→</span>
             </button>
           </div>
+        )}
+          </>
         )}
         <footer>
           <span>TAKE THE TRADE · OKX LIVE STREAM</span>

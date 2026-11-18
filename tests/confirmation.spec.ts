@@ -21,6 +21,7 @@ async function openFakeClockFeed(page: Page): Promise<{ socket: () => Socket; no
   })
   await page.clock.install({ time: START - 60_000 })
   await page.goto('/')
+  await page.getByRole('tab', { name: /Pulse & OI Matrix/ }).click()
   await page.clock.pauseAt(START)
   return {
     socket: () => {

@@ -130,6 +130,7 @@ export type LiveDashboardState = {
   snapshot: MarketSnapshot
   confirmation: ConfirmationView
   story: MarketStoryEvaluation
+  trades: readonly (Trade & { price: string })[]
 }
 
 const emptyOiRegime = evaluateOiRegime({
@@ -627,6 +628,7 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
       snapshot: emptySnapshot(`${confirmationMode} confirmation`),
       confirmation,
       story,
+      trades: [],
     }
   })
 
@@ -939,6 +941,7 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
         snapshot,
         confirmation,
         story,
+        trades: trades.slice(-2500),
       })
     }
 

@@ -12,25 +12,37 @@ test('opens each metric and pulse evidence in the live-first layout', async ({ p
   })
   await page.goto('/')
   await expect(page.getByText('Connected').first()).toBeVisible()
+
+  await page.getByRole('tab', { name: /Flow Metrics/ }).click()
   for (const label of ['Volume Delta', 'Cumulative Volume Delta', 'Open Interest', 'Liquidations']) {
     await page.getByRole('button', { name: `Open ${label} details` }).click()
     await expect(page.getByRole('dialog').getByRole('heading', { name: label, exact: true })).toBeVisible()
     await page.getByRole('button', { name: 'Close dialog' }).click()
   }
-  await page.getByRole('button', { name: /Market Pulse/ }).click()
-  await expect(page.getByText(/Observed evidence/)).toBeVisible()
-  await page.keyboard.press('Escape')
-  await expect(page.getByRole('dialog')).not.toBeVisible()
 
   await page.getByText('Cumulative Volume Delta').first().click()
   await expect(page.getByText('ExoCharts Median View')).toBeVisible()
   await expect(page.getByLabel('CVD median volume chart')).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Price, Volume & Open Interest Matrix' })).toBeVisible()
 
   await page.getByRole('button', { name: '15m' }).click()
   await expect(page.getByText('15 minutes window', { exact: false })).toBeVisible()
   await page.getByRole('button', { name: '30m' }).click()
   await expect(page.getByText('30 minutes window', { exact: false })).toBeVisible()
+
+  await page.getByRole('tab', { name: /Pulse & OI Matrix/ }).click()
+  await page.getByRole('button', { name: /Market Pulse/ }).click()
+  await expect(page.getByText(/Observed evidence/)).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('dialog')).not.toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Price, Volume & Open Interest Matrix' })).toBeVisible()
+
+  await page.getByRole('button', { name: 'Cheat sheet (4 regimes) ↓' }).click()
+  await expect(page.getByRole('button', { name: 'Hide reference table ↑' })).toBeVisible()
+  const pulseBox = await page.locator('.pulse').boundingBox()
+  const matrixBox = await page.locator('.oi-matrix-section').boundingBox()
+  expect(pulseBox).not.toBeNull()
+  expect(matrixBox).not.toBeNull()
+  expect(pulseBox!.height).toBeLessThan(matrixBox!.height - 150)
 })
 
 test('focus mode and live event dismissal work', async ({ page }) => {
@@ -79,6 +91,7 @@ test('displays normalized live trades, open interest and disconnect status', asy
     })
   })
   await page.goto('/')
+  await page.getByRole('tab', { name: /Flow Metrics/ }).click()
   await expect(page.getByText('$80,000.00')).toBeVisible({ timeout: 10000 })
   await expect(page.getByText('+0.01 BTC').first()).toBeVisible()
   await expect(page.getByText('30,416.05 BTC')).toBeVisible()
@@ -102,6 +115,7 @@ test('reconnects after an interruption and keeps the coverage warning', async ({
     })
   })
   await page.goto('/')
+  await page.getByRole('tab', { name: /Flow Metrics/ }).click()
   await expect(page.getByText('$80,000.00')).toBeVisible({ timeout: 10000 })
   await expect(page.getByText('$80,001.00')).toBeVisible({ timeout: 15000 })
   await expect(page.getByText('+0.02 BTC').last()).toBeVisible({ timeout: 10000 })
@@ -114,6 +128,7 @@ test('centers modal on desktop and positions as bottom sheet on mobile', async (
   })
   await page.setViewportSize({ width: 1280, height: 800 })
   await page.goto('/')
+  await page.getByRole('tab', { name: /Pulse & OI Matrix/ }).click()
   await page.getByRole('button', { name: /Market Pulse/ }).click()
   const box = await page.getByRole('dialog').boundingBox()
   expect(box).not.toBeNull()
@@ -161,6 +176,7 @@ test('confirmation mode defaults to 5m, stays independent of the chart, and pers
     ws.onMessage(() => ws.send(JSON.stringify({ event: 'subscribe' })))
   })
   await page.goto('/')
+  await page.getByRole('tab', { name: /Pulse & OI Matrix/ }).click()
   await expect(page.getByRole('button', { name: /Market Pulse \(5m confirmation\)/ })).toBeVisible()
   await page.getByRole('button', { name: 'Settings' }).click()
   await expect(page.getByRole('radio', { name: /Balanced/ })).toBeChecked()
@@ -168,10 +184,14 @@ test('confirmation mode defaults to 5m, stays independent of the chart, and pers
   await page.getByRole('button', { name: 'Close dialog' }).click()
   await expect(page.getByRole('button', { name: /Market Pulse \(15m confirmation\)/ })).toBeVisible()
   await page.getByRole('button', { name: '30m', exact: true }).click()
+  await expect(page.getByRole('button', { name: /Market Pulse \(15m confirmation\)/ })).toBeVisible()
+  await page.getByRole('tab', { name: /Flow Metrics/ }).click()
   await expect(page.getByText('30 minutes window', { exact: false })).toBeVisible()
+  await page.getByRole('tab', { name: /Pulse & OI Matrix/ }).click()
   await expect(page.getByRole('button', { name: /Market Pulse \(15m confirmation\)/ })).toBeVisible()
   expect(await page.evaluate(() => localStorage.getItem('ttt.confirmation.v1'))).toBe('{"mode":"15m"}')
   await page.reload()
+  await page.getByRole('tab', { name: /Pulse & OI Matrix/ }).click()
   await expect(page.getByRole('button', { name: /Market Pulse \(15m confirmation\)/ })).toBeVisible()
   await page.getByRole('button', { name: 'Settings' }).click()
   await expect(page.getByRole('radio', { name: /Slow/ })).toBeChecked()
@@ -195,6 +215,7 @@ test('clear market events removes both alert types while live totals stay and ne
     })
   })
   await page.goto('/')
+  await page.getByRole('tab', { name: /Flow Metrics/ }).click()
   await expect(page.getByText('2 events in your inbox')).toBeVisible({ timeout: 10000 })
   await expect(page.getByText('$160.0K')).toBeVisible()
 
@@ -393,6 +414,163 @@ test('My Trade Snapshot & Journal logs page state, computes PnL on exit, and per
   await page.getByRole('button', { name: /My Trade/ }).click()
   await expect(drawer.getByLabel('Trade note')).toHaveValue('BOS breakout with positive delta')
   await expect(drawer.getByText('+1.00% (+10.0% @ 10x)')).toBeVisible()
+})
+
+test('Footprint tab displays Section 1 battleground, POC, Value Zone, step grouping, Section 2 TSize, and fits mobile and desktop viewports', async ({ page }) => {
+  await page.routeWebSocket('wss://ws.okx.com/ws/v5/public', ws => {
+    ws.onMessage(() => {
+      const now = Date.now()
+      ws.send(JSON.stringify({ event: 'subscribe' }))
+      ws.send(
+        JSON.stringify({
+          arg: { channel: 'trades' },
+          data: [
+            { instId: 'BTC-USDT-SWAP', tradeId: 'fp-1', side: 'buy', sz: '50', ts: String(now - 400), px: '80005' },
+            { instId: 'BTC-USDT-SWAP', tradeId: 'fp-2', side: 'buy', sz: '140', ts: String(now - 300), px: '80025' },
+            { instId: 'BTC-USDT-SWAP', tradeId: 'fp-3', side: 'sell', sz: '5', ts: String(now - 200), px: '80015' },
+            { instId: 'BTC-USDT-SWAP', tradeId: 'fp-4', side: 'buy', sz: '90', ts: String(now - 100), px: '80026' },
+          ],
+        }),
+      )
+    })
+  })
+
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await page.goto('/')
+  await expect(page.getByText('$80,026.00')).toBeVisible({ timeout: 10000 })
+
+  const footprintNav = page.getByRole('button', { name: 'Footprint', exact: true })
+  await footprintNav.click()
+  await expect(footprintNav).toHaveAttribute('aria-current', 'page')
+
+  const ladderTab = page.getByRole('tab', { name: /Price Ladder \(POC\)/ })
+  const tsizeTab = page.getByRole('tab', { name: /Whale vs\. Retail/ })
+  await expect(ladderTab).toHaveAttribute('aria-selected', 'true')
+  await expect(tsizeTab).toHaveAttribute('aria-selected', 'false')
+
+  const fpSection = page.getByRole('region', { name: 'Footprint battleground' })
+  await expect(fpSection).toBeVisible()
+  await expect(fpSection.getByText('Point of Control (POC)')).toBeVisible()
+  await expect(fpSection.getByText('Most traded price', { exact: true })).toBeVisible()
+  await expect(fpSection.getByText('70% Value Zone')).toBeVisible()
+  await expect(fpSection.getByText('Intrabar Delta Swing')).toBeVisible()
+  await expect(fpSection.getByText('$80,025 USDT')).toBeVisible()
+
+  const ladder = fpSection.getByRole('region', { name: 'Footprint price ladder' })
+  await expect(ladder.getByText('$80,025')).toBeVisible()
+  await expect(ladder.getByText('$80,015')).toBeVisible()
+  await expect(ladder.getByText('$80,005')).toBeVisible()
+
+  await fpSection.getByRole('button', { name: '$10', exact: true }).click()
+  await expect(fpSection.getByRole('button', { name: '$10', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await expect(fpSection.getByText('$80,020 USDT')).toBeVisible()
+  await expect(ladder.getByText('$80,020')).toBeVisible()
+  await expect(ladder.getByText('$80,010')).toBeVisible()
+  await expect(ladder.getByText('$80,000')).toBeVisible()
+
+  await fpSection.getByRole('button', { name: '$25', exact: true }).click()
+  await expect(fpSection.getByRole('button', { name: '$25', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await expect(ladder.getByText('$80,025')).toBeVisible()
+  await expect(ladder.getByText('$80,000')).toBeVisible()
+
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+
+  for (const width of [320, 390]) {
+    await page.setViewportSize({ width, height: 900 })
+    await expect(fpSection).toBeVisible()
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+  }
+
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await tsizeTab.click()
+  await expect(tsizeTab).toHaveAttribute('aria-selected', 'true')
+  await expect(fpSection).not.toBeVisible()
+
+  const tsizeSection = page.getByRole('region', { name: 'Whale vs Retail flow' })
+  await expect(tsizeSection).toBeVisible()
+  await expect(tsizeSection.getByText('Whale Net Flow (≥ 1 ₿)', { exact: true })).toBeVisible()
+  await expect(tsizeSection.getByText('Small Order Flow (< 0.1 ₿)', { exact: true })).toBeVisible()
+  await expect(tsizeSection.getByText('Biggest Single Print', { exact: true })).toBeVisible()
+  await expect(tsizeSection.getByText('BUY 1.40 ₿', { exact: true })).toBeVisible()
+  await expect(tsizeSection.getByText('Whales are buying while small traders sell', { exact: true })).toBeVisible()
+
+  const tiers = tsizeSection.getByRole('region', { name: 'Order size tiers' })
+  await expect(tiers.getByText('Whales (≥ 1 ₿)', { exact: true })).toBeVisible()
+  await expect(tiers.getByText('Small Orders (< 0.1 ₿)', { exact: true })).toBeVisible()
+
+  await tsizeSection.getByRole('button', { name: 'Selected Candle', exact: true }).click()
+  await expect(tsizeSection.getByRole('button', { name: 'Selected Candle', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await tsizeSection.getByRole('button', { name: '6-Bar Window', exact: true }).click()
+  await expect(tsizeSection.getByRole('button', { name: '6-Bar Window', exact: true })).toHaveAttribute('aria-pressed', 'true')
+
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+
+  for (const width of [320, 390]) {
+    await page.setViewportSize({ width, height: 900 })
+    await expect(tsizeSection).toBeVisible()
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+  }
+
+  await page.setViewportSize({ width: 1280, height: 900 })
+  const svpTab = page.getByRole('tab', { name: /Session Profile \(SVP\)/ })
+  await svpTab.click()
+  await expect(svpTab).toHaveAttribute('aria-selected', 'true')
+  await expect(tsizeSection).not.toBeVisible()
+
+  const svpSection = page.getByRole('region', { name: 'Session volume profile', exact: true })
+  await expect(svpSection).toBeVisible()
+  await expect(svpSection.getByText('Session POC', { exact: true })).toBeVisible()
+  await expect(svpSection.getByText('Session Value Area (70%)', { exact: true })).toBeVisible()
+  await expect(svpSection.getByText('Naked POC Magnets', { exact: true })).toBeVisible()
+  await expect(svpSection.getByText('$80,025 USDT', { exact: true })).toBeVisible()
+
+  const svpLadder = svpSection.getByRole('region', { name: 'Session volume profile ladder', exact: true })
+  await expect(svpLadder).toBeVisible()
+  await expect(svpLadder.getByText('$80,025', { exact: true })).toBeVisible()
+  await expect(svpLadder.getByText('$80,000', { exact: true })).toBeVisible()
+
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+
+  for (const width of [320, 390]) {
+    await page.setViewportSize({ width, height: 900 })
+    await expect(svpSection).toBeVisible()
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+  }
+
+  await page.setViewportSize({ width: 1280, height: 900 })
+  const fpbsTab = page.getByRole('tab', { name: /Bar Stats \(FPBS\)/ })
+  await fpbsTab.click()
+  await expect(fpbsTab).toHaveAttribute('aria-selected', 'true')
+  await expect(svpSection).not.toBeVisible()
+
+  const fpbsSection = page.getByRole('region', { name: 'Footprint bar statistics', exact: true })
+  await expect(fpbsSection).toBeVisible()
+  await expect(fpbsSection.getByText('6-Bar Running CVD', { exact: true })).toBeVisible()
+  await expect(fpbsSection.getByText('Intrabar Traps & Walls', { exact: true })).toBeVisible()
+  await expect(fpbsSection.getByText('Peak Conviction Bar', { exact: true })).toBeVisible()
+  await expect(fpbsSection.getByRole('button', { name: 'Export CSV ↓' })).toBeVisible()
+
+  const fpbsMatrix = fpbsSection.getByRole('region', { name: 'FPBS stats matrix', exact: true })
+  await expect(fpbsMatrix).toBeVisible()
+  await expect(fpbsMatrix.getByRole('rowheader', { name: 'Volume' })).toBeVisible()
+  await expect(fpbsMatrix.getByRole('rowheader', { name: 'Delta %' })).toBeVisible()
+  await expect(fpbsMatrix.getByRole('rowheader', { name: 'Running CVD' })).toBeVisible()
+  await expect(fpbsMatrix.getByRole('rowheader', { name: 'POC & Signal' })).toBeVisible()
+
+  const pocRowCells = fpbsMatrix.locator('tbody tr').last().locator('td')
+  await expect(pocRowCells).toHaveCount(6)
+  const firstCellBox = (await pocRowCells.first().boundingBox())!
+  const lastCellBox = (await pocRowCells.last().boundingBox())!
+  expect(Math.abs(firstCellBox.y - lastCellBox.y)).toBeLessThanOrEqual(2)
+  expect(lastCellBox.x).toBeGreaterThan(firstCellBox.x + 100)
+
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+
+  for (const width of [320, 390]) {
+    await page.setViewportSize({ width, height: 900 })
+    await expect(fpbsSection).toBeVisible()
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+  }
 })
 
 
