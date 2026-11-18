@@ -184,22 +184,20 @@ export function MarketStory({
             </div>
           </div>
 
-          {story.priceMax !== null && story.priceMin !== null && (
-            <div className="ms-range-pill" aria-label="Window price range">
-              <span>
-                <small>Window High</small>
-                <strong>{formatPriceUsdt(story.priceMax)}</strong>
-              </span>
-              <span>
-                <small>Window Low</small>
-                <strong>{formatPriceUsdt(story.priceMin)}</strong>
-              </span>
-            </div>
-          )}
+          <div className="ms-range-pill" aria-label="Window price range">
+            <span>
+              <small>Window High</small>
+              <strong>{formatPriceUsdt(story.priceMax)}</strong>
+            </span>
+            <span>
+              <small>Window Low</small>
+              <strong>{formatPriceUsdt(story.priceMin)}</strong>
+            </span>
+          </div>
         </div>
       </div>
 
-      {story.windowDivergence && (
+      {story.windowDivergence ? (
         <div
           className={`ms-divergence-banner ${story.windowDivergence.kind}`}
           role="status"
@@ -211,6 +209,16 @@ export function MarketStory({
           <div className="ms-div-copy">
             <strong>{story.windowDivergence.headline}</strong>
             <span>{story.windowDivergence.explanation}</span>
+          </div>
+        </div>
+      ) : (
+        <div className="ms-divergence-banner is-calm" aria-hidden="true">
+          <div className="ms-div-badge">
+            <span>✓</span> Flow aligned
+          </div>
+          <div className="ms-div-copy">
+            <strong>Price and order flow are moving in sync</strong>
+            <span>No multi-bucket price vs. cumulative delta divergence detected in this window.</span>
           </div>
         </div>
       )}

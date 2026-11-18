@@ -456,6 +456,8 @@ test('Footprint tab displays Section 1 battleground, POC, Value Zone, step group
   await expect(fpSection.getByText('Intrabar Delta Swing')).toBeVisible()
   await expect(fpSection.getByText('$80,025 USDT')).toBeVisible()
 
+  const heightBefore = (await fpSection.boundingBox())!.height
+
   const ladder = fpSection.getByRole('region', { name: 'Footprint price ladder' })
   await expect(ladder.getByText('$80,025')).toBeVisible()
   await expect(ladder.getByText('$80,015')).toBeVisible()
@@ -467,11 +469,15 @@ test('Footprint tab displays Section 1 battleground, POC, Value Zone, step group
   await expect(ladder.getByText('$80,020')).toBeVisible()
   await expect(ladder.getByText('$80,010')).toBeVisible()
   await expect(ladder.getByText('$80,000')).toBeVisible()
+  const heightTen = (await fpSection.boundingBox())!.height
+  expect(Math.abs(heightBefore - heightTen)).toBeLessThanOrEqual(2)
 
   await fpSection.getByRole('button', { name: '$25', exact: true }).click()
   await expect(fpSection.getByRole('button', { name: '$25', exact: true })).toHaveAttribute('aria-pressed', 'true')
   await expect(ladder.getByText('$80,025')).toBeVisible()
   await expect(ladder.getByText('$80,000')).toBeVisible()
+  const heightTwentyFive = (await fpSection.boundingBox())!.height
+  expect(Math.abs(heightBefore - heightTwentyFive)).toBeLessThanOrEqual(2)
 
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
 
