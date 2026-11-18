@@ -1,4 +1,5 @@
 import { btcToSatoshis, type Trade } from './tradeEngine'
+import type { OkxCandlePoint, OkxTakerVolumeBucket } from '../data/okx'
 
 export type FootprintStepOption = 'auto' | 5 | 10 | 25 | 50 | 100
 
@@ -258,17 +259,283 @@ function buildCandleVerdict(params: {
   }
 }
 
+function finalizeCandleFromRawRows(params: {
+  index: number
+  start: number
+  end: number
+  isDeveloping: boolean
+  open: number
+  high: number
+  low: number
+  close: number
+  buyBtc: number
+  sellBtc: number
+  maxDeltaBtc: number
+  minDeltaBtc: number
+  tradeCount: number
+  effectiveStep: number
+  rawRows: RawFootprintCell[]
+  maxSideBtc: number
+  detectImbalances?: boolean
+}): FootprintCandle {
+  const {
+    index,
+    start,
+    end,
+    isDeveloping,
+    open,
+    high,
+    low,
+    close,
+    buyBtc,
+    sellBtc,
+    maxDeltaBtc,
+    minDeltaBtc,
+    tradeCount,
+    effectiveStep,
+    rawRows,
+    maxSideBtc,
+    detectImbalances = true,
+  } = params
+
+  const totalBtc = buyBtc + sellBtc
+  const deltaBtc = buyBtc - sellBtc
+  const deltaPct = totalBtc > 0 ? (deltaBtc / totalBtc) * 100 : 0
+  const pocIdx = findPocIndex(rawRows, close)
+  const { vaIndices, vahPrice, valPrice } = computeValueArea(rawRows, pocIdx, totalBtc)
+  const closeRowPrice = Math.floor(close / effectiveStep) * effectiveStep
+
+  let buyImbalanceCount = 0
+  let sellImbalanceCount = 0
+
+  const rows: FootprintRow[] = rawRows.map((row, r) => {
+    const compareSell = rawRows[r + 1]?.sellBtc ?? row.sellBtc
+    const compareBuy = rawRows[r - 1]?.buyBtc ?? row.buyBtc
+
+    let imbalance: FootprintRow['imbalance'] = null
+    if (detectImbalances) {
+      if (row.buyBtc >= IMBALANCE_MIN_BTC && row.buyBtc >= IMBALANCE_RATIO * compareSell) {
+        imbalance = 'buy'
+        buyImbalanceCount++
+      } else if (row.sellBtc >= IMBALANCE_MIN_BTC && row.sellBtc >= IMBALANCE_RATIO * compareBuy) {
+        imbalance = 'sell'
+        sellImbalanceCount++
+      }
+    }
+
+    return {
+      ...row,
+      buyWidthPct: maxSideBtc > 0 && row.buyBtc > 0 ? Math.max(6, Math.round((row.buyBtc / maxSideBtc) * 100)) : 0,
+      sellWidthPct: maxSideBtc > 0 && row.sellBtc > 0 ? Math.max(6, Math.round((row.sellBtc / maxSideBtc) * 100)) : 0,
+      isPoc: r === pocIdx,
+      inValueArea: vaIndices.has(r),
+      isCloseRow: row.price === closeRowPrice,
+      imbalance,
+    }
+  })
+
+  const pocPrice = rawRows[pocIdx].price
+  const pocVolumeBtc = rawRows[pocIdx].totalBtc
+  const verdict = buildCandleVerdict({
+    tradeCount,
+    close,
+    pocPrice,
+    deltaBtc,
+    deltaPct,
+    maxDeltaBtc,
+    minDeltaBtc,
+    buyImbalanceCount,
+    sellImbalanceCount,
+  })
+
+  return {
+    index,
+    start,
+    end,
+    isDeveloping,
+    open,
+    high,
+    low,
+    close,
+    buyBtc,
+    sellBtc,
+    totalBtc,
+    deltaBtc,
+    deltaPct,
+    maxDeltaBtc,
+    minDeltaBtc,
+    tradeCount,
+    stepUsd: effectiveStep,
+    pocPrice,
+    pocVolumeBtc,
+    vahPrice,
+    valPrice,
+    buyImbalanceCount,
+    sellImbalanceCount,
+    rows,
+    ...verdict,
+  }
+}
+
+function buildBackfillCandle(params: {
+  index: number
+  start: number
+  end: number
+  isDeveloping: boolean
+  baseStepUsd: number
+  candle?: OkxCandlePoint
+  taker?: OkxTakerVolumeBucket
+}): FootprintCandle | null {
+  const { index, start, end, isDeveloping, baseStepUsd, candle, taker } = params
+  if (!candle && !taker) return null
+
+  let buyBtc = 0
+  let sellBtc = 0
+  if (taker && (taker.buyBtc > 0 || taker.sellBtc > 0)) {
+    buyBtc = taker.buyBtc
+    sellBtc = taker.sellBtc
+  } else if (candle && candle.volumeBtc > 0) {
+    const vol = taker ? Math.max(taker.volumeBtc, candle.volumeBtc) : candle.volumeBtc
+    const range = candle.high - candle.low
+    const bodyBias = range > 0 ? (candle.close - candle.open) / range : 0
+    const buyRatio = Math.min(0.85, Math.max(0.15, 0.5 + 0.35 * bodyBias))
+    buyBtc = vol * buyRatio
+    sellBtc = vol - buyBtc
+  }
+
+  const totalBtc = buyBtc + sellBtc
+  if (totalBtc <= 0) return null
+
+  const deltaBtc = buyBtc - sellBtc
+  const deltaPct = (deltaBtc / totalBtc) * 100
+  const maxDeltaBtc = Math.max(0, deltaBtc)
+  const minDeltaBtc = Math.min(0, deltaBtc)
+  const tradeCount = Math.max(1, Math.round(totalBtc * 10))
+
+  if (!candle) {
+    const verdict = buildCandleVerdict({
+      tradeCount: 0,
+      close: null,
+      pocPrice: null,
+      deltaBtc,
+      deltaPct,
+      maxDeltaBtc,
+      minDeltaBtc,
+      buyImbalanceCount: 0,
+      sellImbalanceCount: 0,
+    })
+    return {
+      index,
+      start,
+      end,
+      isDeveloping,
+      open: null,
+      high: null,
+      low: null,
+      close: null,
+      buyBtc,
+      sellBtc,
+      totalBtc,
+      deltaBtc,
+      deltaPct,
+      maxDeltaBtc,
+      minDeltaBtc,
+      tradeCount,
+      stepUsd: baseStepUsd,
+      pocPrice: null,
+      pocVolumeBtc: 0,
+      vahPrice: null,
+      valPrice: null,
+      buyImbalanceCount: 0,
+      sellImbalanceCount: 0,
+      rows: [],
+      ...verdict,
+    }
+  }
+
+  const safeLow = Math.min(candle.low, candle.open, candle.close)
+  const safeHigh = Math.max(candle.high, candle.open, candle.close)
+  const effectiveStep = widenStepForRange(safeLow, safeHigh, baseStepUsd)
+  const minRowIdx = Math.floor(safeLow / effectiveStep)
+  const maxRowIdx = Math.floor(safeHigh / effectiveStep)
+  const bodyLow = Math.min(candle.open, candle.close)
+  const bodyHigh = Math.max(candle.open, candle.close)
+  const bodyMid = (bodyLow + bodyHigh) / 2
+  const halfSpan = Math.max(effectiveStep, (safeHigh - safeLow) / 2)
+
+  const weights: { idx: number; weight: number }[] = []
+  let weightSum = 0
+  for (let idx = maxRowIdx; idx >= minRowIdx; idx--) {
+    const rowMid = (idx + 0.5) * effectiveStep
+    const inBody = rowMid >= bodyLow - effectiveStep * 0.5 && rowMid <= bodyHigh + effectiveStep * 0.5
+    const distNorm = Math.min(1, Math.abs(rowMid - bodyMid) / halfSpan)
+    const weight = (inBody ? 1.2 : 0.35) + (1 - distNorm) * 0.8
+    weights.push({ idx, weight })
+    weightSum += weight
+  }
+
+  const rawRows: RawFootprintCell[] = []
+  let maxSideBtc = 0
+  for (const { idx, weight } of weights) {
+    const share = weightSum > 0 ? weight / weightSum : 1 / weights.length
+    const rowBuyBtc = buyBtc * share
+    const rowSellBtc = sellBtc * share
+    if (rowBuyBtc > maxSideBtc) maxSideBtc = rowBuyBtc
+    if (rowSellBtc > maxSideBtc) maxSideBtc = rowSellBtc
+    rawRows.push({
+      price: idx * effectiveStep,
+      buyBtc: rowBuyBtc,
+      sellBtc: rowSellBtc,
+      totalBtc: rowBuyBtc + rowSellBtc,
+      deltaBtc: rowBuyBtc - rowSellBtc,
+    })
+  }
+
+  return finalizeCandleFromRawRows({
+    index,
+    start,
+    end,
+    isDeveloping,
+    open: candle.open,
+    high: candle.high,
+    low: candle.low,
+    close: candle.close,
+    buyBtc,
+    sellBtc,
+    maxDeltaBtc,
+    minDeltaBtc,
+    tradeCount,
+    effectiveStep,
+    rawRows,
+    maxSideBtc,
+    detectImbalances: false,
+  })
+}
+
 export function evaluateFootprint(params: {
   trades: readonly FootprintTrade[]
   now: number
   bucketMs: number
   stepOption?: FootprintStepOption
   candleCount?: number
+  backfill?: {
+    candles?: readonly OkxCandlePoint[]
+    takerBuckets?: readonly OkxTakerVolumeBucket[]
+  }
 }): FootprintEvaluation {
-  const { trades, now, bucketMs, stepOption = 'auto', candleCount = 6 } = params
+  const { trades, now, bucketMs, stepOption = 'auto', candleCount = 6, backfill } = params
   const safeBucketMs = bucketMs > 0 ? bucketMs : 60_000
   const currentStart = Math.floor(now / safeBucketMs) * safeBucketMs
   const firstStart = currentStart - (candleCount - 1) * safeBucketMs
+
+  const candleMap = new Map<number, OkxCandlePoint>()
+  for (const candle of backfill?.candles ?? []) {
+    candleMap.set(candle.time, candle)
+  }
+  const takerMap = new Map<number, OkxTakerVolumeBucket>()
+  for (const bucket of backfill?.takerBuckets ?? []) {
+    takerMap.set(bucket.time, bucket)
+  }
 
   type ParsedTrade = { time: number; price: number; side: 'buy' | 'sell'; sats: bigint }
   const bucketed: ParsedTrade[][] = Array.from({ length: candleCount }, () => [])
@@ -286,8 +553,16 @@ export function evaluateFootprint(params: {
   }
 
   const bucketRanges: number[] = []
-  for (const list of bucketed) {
-    if (list.length === 0) continue
+  for (let index = 0; index < bucketed.length; index++) {
+    const list = bucketed[index]
+    if (list.length === 0) {
+      const start = firstStart + index * safeBucketMs
+      const candle = candleMap.get(start)
+      if (candle && candle.high > candle.low) {
+        bucketRanges.push(candle.high - candle.low)
+      }
+      continue
+    }
     list.sort((a, b) => a.time - b.time)
     let minP = Infinity
     let maxP = -Infinity
@@ -306,6 +581,17 @@ export function evaluateFootprint(params: {
     const isDeveloping = index === candleCount - 1
 
     if (list.length === 0) {
+      const backfilled = buildBackfillCandle({
+        index,
+        start,
+        end,
+        isDeveloping,
+        baseStepUsd,
+        candle: candleMap.get(start),
+        taker: takerMap.get(start),
+      })
+      if (backfilled) return backfilled
+
       const verdict = buildCandleVerdict({
         tradeCount: 0,
         close: null,
@@ -403,60 +689,12 @@ export function evaluateFootprint(params: {
       })
     }
 
-    const totalBtc = Number(buySats + sellSats) / 1e8
-    const pocIdx = findPocIndex(rawRows, close)
-    const { vaIndices, vahPrice, valPrice } = computeValueArea(rawRows, pocIdx, totalBtc)
-
-    const closeRowPrice = Math.floor(close / effectiveStep) * effectiveStep
-    let buyImbalanceCount = 0
-    let sellImbalanceCount = 0
-
-    const rows: FootprintRow[] = rawRows.map((row, r) => {
-      const compareSell = rawRows[r + 1]?.sellBtc ?? row.sellBtc
-      const compareBuy = rawRows[r - 1]?.buyBtc ?? row.buyBtc
-
-      let imbalance: FootprintRow['imbalance'] = null
-      if (row.buyBtc >= IMBALANCE_MIN_BTC && row.buyBtc >= IMBALANCE_RATIO * compareSell) {
-        imbalance = 'buy'
-        buyImbalanceCount++
-      } else if (row.sellBtc >= IMBALANCE_MIN_BTC && row.sellBtc >= IMBALANCE_RATIO * compareBuy) {
-        imbalance = 'sell'
-        sellImbalanceCount++
-      }
-
-      return {
-        ...row,
-        buyWidthPct: maxSideBtc > 0 && row.buyBtc > 0 ? Math.max(6, Math.round((row.buyBtc / maxSideBtc) * 100)) : 0,
-        sellWidthPct: maxSideBtc > 0 && row.sellBtc > 0 ? Math.max(6, Math.round((row.sellBtc / maxSideBtc) * 100)) : 0,
-        isPoc: r === pocIdx,
-        inValueArea: vaIndices.has(r),
-        isCloseRow: row.price === closeRowPrice,
-        imbalance,
-      }
-    })
-
     const buyBtc = Number(buySats) / 1e8
     const sellBtc = Number(sellSats) / 1e8
-    const deltaBtc = Number(buySats - sellSats) / 1e8
-    const deltaPct = totalBtc > 0 ? (deltaBtc / totalBtc) * 100 : 0
     const maxDeltaBtc = Number(maxDeltaSats) / 1e8
     const minDeltaBtc = Number(minDeltaSats) / 1e8
-    const pocPrice = rawRows[pocIdx].price
-    const pocVolumeBtc = rawRows[pocIdx].totalBtc
 
-    const verdict = buildCandleVerdict({
-      tradeCount: list.length,
-      close,
-      pocPrice,
-      deltaBtc,
-      deltaPct,
-      maxDeltaBtc,
-      minDeltaBtc,
-      buyImbalanceCount,
-      sellImbalanceCount,
-    })
-
-    return {
+    return finalizeCandleFromRawRows({
       index,
       start,
       end,
@@ -467,22 +705,14 @@ export function evaluateFootprint(params: {
       close,
       buyBtc,
       sellBtc,
-      totalBtc,
-      deltaBtc,
-      deltaPct,
       maxDeltaBtc,
       minDeltaBtc,
       tradeCount: list.length,
-      stepUsd: effectiveStep,
-      pocPrice,
-      pocVolumeBtc,
-      vahPrice,
-      valPrice,
-      buyImbalanceCount,
-      sellImbalanceCount,
-      rows,
-      ...verdict,
-    }
+      effectiveStep,
+      rawRows,
+      maxSideBtc,
+      detectImbalances: true,
+    })
   })
 
   return { candles, stepUsd: baseStepUsd }

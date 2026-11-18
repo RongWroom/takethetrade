@@ -11,6 +11,7 @@ import {
   type FootprintTrade,
   type TradeSizeScope,
 } from '../domain/footprint'
+import type { OkxCandlePoint, OkxTakerVolumeBucket } from '../data/okx'
 
 export type FolderTone = 'teal' | 'rose' | 'amber' | 'blue'
 
@@ -127,6 +128,7 @@ function describeValuePosition(candle: FootprintCandle): string {
 
 export function FootprintTab({
   trades,
+  backfill,
   timeframeShort,
   timeframeLabel,
   bucketMs,
@@ -134,6 +136,10 @@ export function FootprintTab({
   updated,
 }: {
   trades: readonly FootprintTrade[]
+  backfill?: {
+    candles: readonly OkxCandlePoint[]
+    takerBuckets: readonly OkxTakerVolumeBucket[]
+  }
   timeframeShort: string
   timeframeLabel: string
   bucketMs: number
@@ -157,6 +163,7 @@ export function FootprintTab({
     now,
     bucketMs,
     stepOption,
+    backfill,
   })
 
   const latestActiveIdx = (() => {

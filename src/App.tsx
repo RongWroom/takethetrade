@@ -260,6 +260,7 @@ function App() {
         {activeTab === 'footprint' ? (
           <FootprintTab
             trades={live.trades}
+            backfill={live.backfill}
             timeframeShort={timeframe}
             timeframeLabel={live.timeframeLabel}
             bucketMs={getTimeframeOption(timeframe).bucketMs}

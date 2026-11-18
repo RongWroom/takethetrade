@@ -131,6 +131,10 @@ export type LiveDashboardState = {
   confirmation: ConfirmationView
   story: MarketStoryEvaluation
   trades: readonly (Trade & { price: string })[]
+  backfill: {
+    candles: readonly OkxCandlePoint[]
+    takerBuckets: readonly OkxTakerVolumeBucket[]
+  }
 }
 
 const emptyOiRegime = evaluateOiRegime({
@@ -629,6 +633,10 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
       confirmation,
       story,
       trades: [],
+      backfill: {
+        candles: [],
+        takerBuckets: [],
+      },
     }
   })
 
@@ -941,7 +949,11 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
         snapshot,
         confirmation,
         story,
-        trades: trades.slice(-2500),
+        trades: trades.slice(),
+        backfill: {
+          candles: cached?.candles ?? [],
+          takerBuckets: cached?.takerBuckets ?? [],
+        },
       })
     }
 

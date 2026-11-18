@@ -294,6 +294,50 @@ describe('evaluateFpbsStats & formatFpbsCsv', () => {
     expect(lines[6]).toContain('Live')
     expect(lines[6]).toContain('Buyer Trap')
   })
+
+  it('fills prior closed bars from REST backfill when raw live ticks only cover the latest bar', () => {
+    const tf5m = 5 * min
+    const now = baseTime + 5 * tf5m + 45_000
+
+    const candles = [
+      { time: baseTime, open: 80_000, high: 80_120, low: 79_980, close: 80_100, volumeBtc: 10 },
+      { time: baseTime + tf5m, open: 80_100, high: 80_150, low: 80_040, close: 80_060, volumeBtc: 8 },
+      { time: baseTime + 2 * tf5m, open: 80_060, high: 80_110, low: 80_010, close: 80_090, volumeBtc: 12 },
+      { time: baseTime + 3 * tf5m, open: 80_090, high: 80_200, low: 80_070, close: 80_180, volumeBtc: 15 },
+      { time: baseTime + 4 * tf5m, open: 80_180, high: 80_220, low: 80_120, close: 80_140, volumeBtc: 9 },
+    ]
+    const takerBuckets = [
+      { time: baseTime, buyBtc: 6, sellBtc: 4, deltaBtc: 2, volumeBtc: 10 },
+      { time: baseTime + tf5m, buyBtc: 3, sellBtc: 5, deltaBtc: -2, volumeBtc: 8 },
+      { time: baseTime + 2 * tf5m, buyBtc: 7, sellBtc: 5, deltaBtc: 2, volumeBtc: 12 },
+      { time: baseTime + 3 * tf5m, buyBtc: 10, sellBtc: 5, deltaBtc: 5, volumeBtc: 15 },
+      { time: baseTime + 4 * tf5m, buyBtc: 4, sellBtc: 5, deltaBtc: -1, volumeBtc: 9 },
+    ]
+
+    const liveTrades: FootprintTrade[] = [
+      makeTrade('live-1', baseTime + 5 * tf5m + 5_000, 'buy', 80_150, '1.50000000'),
+      makeTrade('live-2', baseTime + 5 * tf5m + 10_000, 'sell', 80_145, '0.50000000'),
+    ]
+
+    const fp = evaluateFootprint({
+      trades: liveTrades,
+      now,
+      bucketMs: tf5m,
+      backfill: { candles, takerBuckets },
+    })
+    const fpbs = evaluateFpbsStats(fp.candles)
+
+    expect(fpbs.columns).toHaveLength(6)
+    for (const col of fpbs.columns) {
+      expect(col.tradeCount).toBeGreaterThan(0)
+      expect(col.volumeBtc).toBeGreaterThan(0)
+      expect(col.pocPrice).not.toBeNull()
+      expect(col.signalKind).not.toBe('empty')
+    }
+    // Running CVD across bars 0..5: +2, 0, +2, +7, +6, +7
+    expect(fpbs.columns.map(c => Number(c.cvdBtc.toFixed(4)))).toEqual([2, 0, 2, 7, 6, 7])
+    expect(fpbs.windowCvdBtc).toBeCloseTo(7, 6)
+  })
 })
 
 
