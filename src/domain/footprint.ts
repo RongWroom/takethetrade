@@ -63,10 +63,14 @@ export type FootprintEvaluation = {
 }
 
 const AUTO_STEPS = [5, 10, 25, 50, 100, 250, 500] as const
+const SVP_AUTO_STEPS = [5, 10, 25, 50, 100, 250, 500, 1000] as const
 const WIDEN_STEPS = [5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000] as const
 const IMBALANCE_MIN_BTC = 0.05
 const IMBALANCE_RATIO = 3
 const MAX_CANDLE_ROWS = 15
+const MAX_SVP_ROWS = 22
+const DAY_MS = 86_400_000
+const CHART_SVP_BAR_COUNT = 24
 
 function parseTradeSats(quantityBtc: string): bigint | null {
   try {
@@ -86,14 +90,28 @@ function chooseStepUsd(ranges: readonly number[], stepOption: FootprintStepOptio
   return AUTO_STEPS[AUTO_STEPS.length - 1]
 }
 
-function widenStepForRange(minPrice: number, maxPrice: number, baseStep: number): number {
+function widenStepForRange(
+  minPrice: number,
+  maxPrice: number,
+  baseStep: number,
+  maxRows = MAX_CANDLE_ROWS,
+): number {
   const candidates = WIDEN_STEPS.filter(s => s >= baseStep)
   for (const step of candidates) {
     const minIdx = Math.floor(minPrice / step)
     const maxIdx = Math.floor(maxPrice / step)
-    if (maxIdx - minIdx + 1 <= MAX_CANDLE_ROWS) return step
+    if (maxIdx - minIdx + 1 <= maxRows) return step
   }
   return WIDEN_STEPS[WIDEN_STEPS.length - 1]
+}
+
+function chooseSvpStepUsd(range: number, stepOption: FootprintStepOption): number {
+  if (stepOption !== 'auto') return stepOption
+  if (range <= 0) return 10
+  for (const step of SVP_AUTO_STEPS) {
+    if (range / step <= 16) return step
+  }
+  return SVP_AUTO_STEPS[SVP_AUTO_STEPS.length - 1]
 }
 
 type RawFootprintCell = {
@@ -932,13 +950,47 @@ export function evaluateTradeSizeFlow(params: {
   }
 }
 
+export type SvpRangeId = '24h' | 'today' | 'prevDay' | '3d' | '7d' | 'chart'
+
+export const SVP_RANGE_OPTIONS: readonly {
+  id: SvpRangeId
+  label: string
+  shortLabel: string
+  description: string
+}[] = [
+  { id: '24h', label: 'Rolling 24h', shortLabel: '24h', description: 'Last 24 hours (15m profile + live)' },
+  { id: 'today', label: 'Today (UTC)', shortLabel: 'Today', description: 'Current UTC day since 00:00 UTC' },
+  { id: 'prevDay', label: 'Prev Day (UTC)', shortLabel: 'Prev Day', description: 'Yesterday’s completed UTC session' },
+  { id: '3d', label: '3-Day Swing', shortLabel: '3D', description: 'Last 72 hours (1H profile + live)' },
+  { id: '7d', label: '7-Day Weekly', shortLabel: '7D', description: 'Last 7 days (1H profile + live)' },
+  { id: 'chart', label: 'Chart TF', shortLabel: 'Chart TF', description: 'Matches top timeframe bar' },
+]
+
+export type PrevDayValueLevels = {
+  dateLabel: string
+  pocPrice: number
+  vahPrice: number
+  valPrice: number
+  high: number
+  low: number
+  totalBtc: number
+  candleCount: number
+  pricePosition: 'above-pvah' | 'inside-pva' | 'below-pval' | 'unknown'
+  contextNote: string
+}
+
 export type NakedPocMagnet = {
   candleIndex: number
   candleStart: number
   price: number
+  rowPrice: number
+  onLadder: boolean
+  kind: 'daily' | 'candle'
+  originLabel: string
   volumeBtc: number
   directionFromClose: 'above' | 'below' | 'at'
   distanceUsd: number
+  distancePct: number | null
 }
 
 export type SessionProfileRow = {
@@ -956,9 +1008,18 @@ export type SessionProfileRow = {
   inValueArea: boolean
   isLatestRow: boolean
   isNakedPoc: boolean
+  nakedPocCount: number
+  nakedPocLabels: string[]
+  isPrevDayPoc: boolean
+  isPrevDayVah: boolean
+  isPrevDayVal: boolean
 }
 
 export type SessionProfileEvaluation = {
+  rangeId: SvpRangeId
+  rangeLabel: string
+  sourceLabel: string
+  candleCount: number
   stepUsd: number
   totalBtc: number
   deltaBtc: number
@@ -969,6 +1030,8 @@ export type SessionProfileEvaluation = {
   sessionVahPrice: number | null
   sessionValPrice: number | null
   valueStatus: 'above' | 'below' | 'inside' | 'waiting'
+  prevDayLevels: PrevDayValueLevels | null
+  nakedPocMode: 'daily' | 'candle'
   nakedPocs: NakedPocMagnet[]
   rows: SessionProfileRow[]
   badge: { label: string; tone: 'teal' | 'rose' | 'amber' | 'blue' }
@@ -976,104 +1039,121 @@ export type SessionProfileEvaluation = {
   oneLiner: string
 }
 
-export function evaluateSessionProfile(params: {
-  trades: readonly FootprintTrade[]
-  candles: readonly FootprintCandle[]
-  stepOption?: FootprintStepOption
-}): SessionProfileEvaluation {
-  const { trades, candles, stepOption = 'auto' } = params
-  const defaultStep = stepOption === 'auto' ? 10 : stepOption
+type CandleProfileSource = {
+  time: number
+  open: number
+  high: number
+  low: number
+  close: number
+  volumeBtc: number
+  buyBtc?: number
+  sellBtc?: number
+}
 
-  if (candles.length === 0) {
-    return {
-      stepUsd: defaultStep,
-      totalBtc: 0,
-      deltaBtc: 0,
-      tradeCount: 0,
-      latestPrice: null,
-      sessionPocPrice: null,
-      sessionPocVolumeBtc: 0,
-      sessionVahPrice: null,
-      sessionValPrice: null,
-      valueStatus: 'waiting',
-      nakedPocs: [],
-      rows: [],
-      badge: { label: 'Waiting for trades', tone: 'blue' },
-      headline: 'Waiting for live trades to build Session Profile',
-      oneLiner: 'Trades across this window will stack into one price profile with Value Area and Naked POC magnets.',
+function distributeCandleToCells(params: {
+  candle: CandleProfileSource
+  taker?: OkxTakerVolumeBucket
+  effectiveStep: number
+  cellMap: Map<number, { buyBtc: number; sellBtc: number }>
+}): number {
+  const { candle, taker, effectiveStep, cellMap } = params
+  let buyBtc = 0
+  let sellBtc = 0
+
+  if (candle.buyBtc !== undefined && candle.sellBtc !== undefined) {
+    buyBtc = candle.buyBtc
+    sellBtc = candle.sellBtc
+  } else if (taker && taker.volumeBtc > 0) {
+    if (candle.volumeBtc > 0) {
+      const buyShare = Math.min(1, Math.max(0, taker.buyBtc / taker.volumeBtc))
+      buyBtc = candle.volumeBtc * buyShare
+      sellBtc = candle.volumeBtc - buyBtc
+    } else {
+      buyBtc = taker.buyBtc
+      sellBtc = taker.sellBtc
     }
+  } else if (candle.volumeBtc > 0) {
+    const range = candle.high - candle.low
+    const bodyBias = range > 0 ? (candle.close - candle.open) / range : 0
+    const buyRatio = Math.min(0.85, Math.max(0.15, 0.5 + 0.35 * bodyBias))
+    buyBtc = candle.volumeBtc * buyRatio
+    sellBtc = candle.volumeBtc - buyBtc
   }
 
-  const windowStart = candles[0].start
-  const windowEnd = candles[candles.length - 1].end
+  const totalBtc = buyBtc + sellBtc
+  if (totalBtc <= 0) return 0
 
-  type ParsedTrade = { time: number; price: number; side: 'buy' | 'sell'; sats: bigint }
-  const validTrades: ParsedTrade[] = []
-  let minPrice = Infinity
-  let maxPrice = -Infinity
-  let buySats = 0n
-  let sellSats = 0n
+  const safeLow = Math.min(candle.low, candle.open, candle.close)
+  const safeHigh = Math.max(candle.high, candle.open, candle.close)
+  const bodyLow = Math.min(candle.open, candle.close)
+  const bodyHigh = Math.max(candle.open, candle.close)
+  const cMinIdx = Math.floor(safeLow / effectiveStep)
+  const cMaxIdx = Math.floor(safeHigh / effectiveStep)
 
-  for (const t of trades) {
-    if (t.time < windowStart || t.time >= windowEnd) continue
-    const price = Number(t.price)
-    if (!Number.isFinite(price) || price <= 0) continue
-    const sats = parseTradeSats(t.quantityBtc)
-    if (sats === null) continue
-
-    validTrades.push({ time: t.time, price, side: t.side, sats })
-    if (price < minPrice) minPrice = price
-    if (price > maxPrice) maxPrice = price
-    if (t.side === 'buy') buySats += sats
-    else sellSats += sats
+  if (safeHigh <= safeLow || cMinIdx === cMaxIdx) {
+    const existing = cellMap.get(cMinIdx) ?? { buyBtc: 0, sellBtc: 0 }
+    existing.buyBtc += buyBtc
+    existing.sellBtc += sellBtc
+    cellMap.set(cMinIdx, existing)
+    return totalBtc
   }
 
-  if (validTrades.length === 0) {
-    return {
-      stepUsd: defaultStep,
-      totalBtc: 0,
-      deltaBtc: 0,
-      tradeCount: 0,
-      latestPrice: null,
-      sessionPocPrice: null,
-      sessionPocVolumeBtc: 0,
-      sessionVahPrice: null,
-      sessionValPrice: null,
-      valueStatus: 'waiting',
-      nakedPocs: [],
-      rows: [],
-      badge: { label: 'Waiting for trades', tone: 'blue' },
-      headline: 'Waiting for live trades to build Session Profile',
-      oneLiner: 'Trades across this window will stack into one price profile with Value Area and Naked POC magnets.',
-    }
+  const weights: { idx: number; weight: number }[] = []
+  let weightSum = 0
+  for (let idx = cMaxIdx; idx >= cMinIdx; idx--) {
+    const rowLow = idx * effectiveStep
+    const rowHigh = (idx + 1) * effectiveStep
+    const wickOverlap = Math.max(0, Math.min(safeHigh, rowHigh) - Math.max(safeLow, rowLow))
+    const bodyOverlap = Math.max(0, Math.min(bodyHigh, rowHigh) - Math.max(bodyLow, rowLow))
+    const weight = bodyOverlap * 1.5 + wickOverlap * 0.5
+    weights.push({ idx, weight })
+    weightSum += weight
   }
 
-  validTrades.sort((a, b) => a.time - b.time)
-  const latestPrice = validTrades[validTrades.length - 1].price
-
-  const baseStep = chooseStepUsd([maxPrice - minPrice], stepOption)
-  const effectiveStep = widenStepForRange(minPrice, maxPrice, baseStep)
-  const minRowIdx = Math.floor(minPrice / effectiveStep)
-  const maxRowIdx = Math.floor(maxPrice / effectiveStep)
-
-  const cellMap = new Map<number, { buySats: bigint; sellSats: bigint }>()
-  for (const item of validTrades) {
-    const rowIdx = Math.floor(item.price / effectiveStep)
-    const existing = cellMap.get(rowIdx) ?? { buySats: 0n, sellSats: 0n }
-    if (item.side === 'buy') existing.buySats += item.sats
-    else existing.sellSats += item.sats
-    cellMap.set(rowIdx, existing)
+  for (const { idx, weight } of weights) {
+    const share = weightSum > 0 ? weight / weightSum : 1 / weights.length
+    if (share <= 0) continue
+    const existing = cellMap.get(idx) ?? { buyBtc: 0, sellBtc: 0 }
+    existing.buyBtc += buyBtc * share
+    existing.sellBtc += sellBtc * share
+    cellMap.set(idx, existing)
   }
 
+  return totalBtc
+}
+
+function buildRawProfileGrid(params: {
+  cellMap: Map<number, { buyBtc: number; sellBtc: number }>
+  minRowIdx: number
+  maxRowIdx: number
+  effectiveStep: number
+  referenceClose: number
+}): {
+  rawRows: RawFootprintCell[]
+  maxRowTotalBtc: number
+  totalBtc: number
+  deltaBtc: number
+  pocIdx: number
+  vaIndices: Set<number>
+  pocPrice: number
+  pocVolumeBtc: number
+  vahPrice: number
+  valPrice: number
+} {
+  const { cellMap, minRowIdx, maxRowIdx, effectiveStep, referenceClose } = params
   const rawRows: RawFootprintCell[] = []
   let maxRowTotalBtc = 0
+  let totalBuyBtc = 0
+  let totalSellBtc = 0
 
   for (let idx = maxRowIdx; idx >= minRowIdx; idx--) {
     const cell = cellMap.get(idx)
-    const rowBuyBtc = cell ? Number(cell.buySats) / 1e8 : 0
-    const rowSellBtc = cell ? Number(cell.sellSats) / 1e8 : 0
+    const rowBuyBtc = cell?.buyBtc ?? 0
+    const rowSellBtc = cell?.sellBtc ?? 0
     const rowTotalBtc = rowBuyBtc + rowSellBtc
     const rowDeltaBtc = rowBuyBtc - rowSellBtc
+    totalBuyBtc += rowBuyBtc
+    totalSellBtc += rowSellBtc
     if (rowTotalBtc > maxRowTotalBtc) maxRowTotalBtc = rowTotalBtc
     rawRows.push({
       price: idx * effectiveStep,
@@ -1084,71 +1164,764 @@ export function evaluateSessionProfile(params: {
     })
   }
 
-  const totalBtc = Number(buySats + sellSats) / 1e8
-  const deltaBtc = Number(buySats - sellSats) / 1e8
-  const pocIdx = findPocIndex(rawRows, latestPrice)
+  const totalBtc = totalBuyBtc + totalSellBtc
+  const deltaBtc = totalBuyBtc - totalSellBtc
+  const pocIdx = findPocIndex(rawRows, referenceClose)
   const { vaIndices, vahPrice, valPrice } = computeValueArea(rawRows, pocIdx, totalBtc)
-  const sessionPocPrice = rawRows[pocIdx].price
-  const sessionPocVolumeBtc = rawRows[pocIdx].totalBtc
-  const latestRowPrice = Math.floor(latestPrice / effectiveStep) * effectiveStep
 
-  // Naked POC detection: prior closed-candle POCs never revisited by later candles
-  const nakedByPrice = new Map<number, NakedPocMagnet>()
-  for (let i = 0; i < candles.length - 1; i++) {
-    const closedCandle = candles[i]
-    if (closedCandle.tradeCount === 0 || closedCandle.pocPrice === null) continue
-    const alignedPoc = Math.floor(closedCandle.pocPrice / effectiveStep) * effectiveStep
+  return {
+    rawRows,
+    maxRowTotalBtc,
+    totalBtc,
+    deltaBtc,
+    pocIdx,
+    vaIndices,
+    pocPrice: rawRows[pocIdx].price,
+    pocVolumeBtc: rawRows[pocIdx].totalBtc,
+    vahPrice,
+    valPrice,
+  }
+}
 
-    let testedLater = false
-    for (let j = i + 1; j < candles.length; j++) {
-      const later = candles[j]
-      if (later.tradeCount === 0 || later.low === null || later.high === null) continue
-      const laterLowRow = Math.floor(later.low / effectiveStep) * effectiveStep
-      const laterHighRow = Math.floor(later.high / effectiveStep) * effectiveStep
-      if (laterLowRow <= alignedPoc && alignedPoc <= laterHighRow) {
-        testedLater = true
+type UtcDayProfileResult = {
+  pocPrice: number
+  pocVolumeBtc: number
+  vahPrice: number
+  valPrice: number
+  high: number
+  low: number
+  totalBtc: number
+  stepUsd: number
+  candleCount: number
+  dateLabel: string
+}
+
+function computeUtcDayProfile(params: {
+  dayCandles: readonly OkxCandlePoint[]
+  takerMap: ReadonlyMap<number, OkxTakerVolumeBucket>
+  dayStart: number
+}): UtcDayProfileResult | null {
+  const { dayCandles, takerMap, dayStart } = params
+  if (dayCandles.length === 0) return null
+
+  const sorted = [...dayCandles].sort((a, b) => a.time - b.time)
+  let minPrice = Infinity
+  let maxPrice = -Infinity
+  for (const c of sorted) {
+    const lo = Math.min(c.low, c.open, c.close)
+    const hi = Math.max(c.high, c.open, c.close)
+    if (lo < minPrice) minPrice = lo
+    if (hi > maxPrice) maxPrice = hi
+  }
+  if (!Number.isFinite(minPrice) || !Number.isFinite(maxPrice) || minPrice <= 0) return null
+
+  const baseStep = chooseSvpStepUsd(maxPrice - minPrice, 'auto')
+  const effectiveStep = widenStepForRange(minPrice, maxPrice, baseStep, MAX_SVP_ROWS)
+  const minRowIdx = Math.floor(minPrice / effectiveStep)
+  const maxRowIdx = Math.floor(maxPrice / effectiveStep)
+
+  const cellMap = new Map<number, { buyBtc: number; sellBtc: number }>()
+  for (const c of sorted) {
+    distributeCandleToCells({
+      candle: c,
+      taker: takerMap.get(c.time),
+      effectiveStep,
+      cellMap,
+    })
+  }
+
+  const referenceClose = sorted[sorted.length - 1].close
+  const grid = buildRawProfileGrid({
+    cellMap,
+    minRowIdx,
+    maxRowIdx,
+    effectiveStep,
+    referenceClose,
+  })
+  if (grid.totalBtc <= 0) return null
+
+  const dateLabel = `${new Date(dayStart).toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    timeZone: 'UTC',
+  })} UTC`
+
+  return {
+    pocPrice: grid.pocPrice,
+    pocVolumeBtc: grid.pocVolumeBtc,
+    vahPrice: grid.vahPrice,
+    valPrice: grid.valPrice,
+    high: maxPrice,
+    low: minPrice,
+    totalBtc: grid.totalBtc,
+    stepUsd: effectiveStep,
+    candleCount: sorted.length,
+    dateLabel,
+  }
+}
+
+export function evaluatePrevDayReference(params: {
+  candles15m?: readonly OkxCandlePoint[]
+  taker15m?: readonly OkxTakerVolumeBucket[]
+  now: number
+  latestPrice?: number | null
+}): PrevDayValueLevels | null {
+  const { candles15m = [], taker15m = [], now, latestPrice = null } = params
+  const todayUtcStart = Math.floor(now / DAY_MS) * DAY_MS
+  const prevDayUtcStart = todayUtcStart - DAY_MS
+  const prevCandles = candles15m.filter(c => c.time >= prevDayUtcStart && c.time < todayUtcStart)
+  if (prevCandles.length === 0) return null
+
+  const takerMap = new Map<number, OkxTakerVolumeBucket>()
+  for (const tb of taker15m) takerMap.set(tb.time, tb)
+
+  const profile = computeUtcDayProfile({
+    dayCandles: prevCandles,
+    takerMap,
+    dayStart: prevDayUtcStart,
+  })
+  if (!profile) return null
+
+  let pricePosition: PrevDayValueLevels['pricePosition'] = 'unknown'
+  if (latestPrice !== null && Number.isFinite(latestPrice) && latestPrice > 0) {
+    const latestRowPrice = Math.floor(latestPrice / profile.stepUsd) * profile.stepUsd
+    if (latestRowPrice > profile.vahPrice) pricePosition = 'above-pvah'
+    else if (latestRowPrice < profile.valPrice) pricePosition = 'below-pval'
+    else pricePosition = 'inside-pva'
+  }
+
+  const contextNote =
+    pricePosition === 'above-pvah'
+      ? `Price is holding above yesterday’s Value Area (${formatPriceInt(profile.vahPrice)} pVAH) — bullish acceptance; pVAH and ${formatPriceInt(profile.pocPrice)} pPOC act as pullback support.`
+      : pricePosition === 'below-pval'
+        ? `Price is trading below yesterday’s Value Area (${formatPriceInt(profile.valPrice)} pVAL) — bearish pressure; pVAL and ${formatPriceInt(profile.pocPrice)} pPOC act as overhead resistance.`
+        : pricePosition === 'inside-pva'
+          ? `Price is inside yesterday’s 70% Value Area (${formatPriceInt(profile.valPrice)}–${formatPriceInt(profile.vahPrice)}) — rotational range around ${formatPriceInt(profile.pocPrice)} pPOC.`
+          : `Yesterday’s 70% Value Area spanned ${formatPriceInt(profile.valPrice)}–${formatPriceInt(profile.vahPrice)} around ${formatPriceInt(profile.pocPrice)} pPOC.`
+
+  return {
+    dateLabel: profile.dateLabel,
+    pocPrice: profile.pocPrice,
+    vahPrice: profile.vahPrice,
+    valPrice: profile.valPrice,
+    high: profile.high,
+    low: profile.low,
+    totalBtc: profile.totalBtc,
+    candleCount: profile.candleCount,
+    pricePosition,
+    contextNote,
+  }
+}
+
+export function evaluateDailyNakedPocs(params: {
+  candles15m?: readonly OkxCandlePoint[]
+  taker15m?: readonly OkxTakerVolumeBucket[]
+  candles1h?: readonly OkxCandlePoint[]
+  taker1h?: readonly OkxTakerVolumeBucket[]
+  liveTrades?: readonly { time: number; price: number }[]
+  now: number
+  latestPrice: number
+  ladderStepUsd: number
+  ladderMinRowPrice: number
+  ladderMaxRowPrice: number
+}): NakedPocMagnet[] {
+  const {
+    candles15m = [],
+    taker15m = [],
+    candles1h = [],
+    taker1h = [],
+    liveTrades = [],
+    now,
+    latestPrice,
+    ladderStepUsd,
+    ladderMinRowPrice,
+    ladderMaxRowPrice,
+  } = params
+
+  const todayUtcStart = Math.floor(now / DAY_MS) * DAY_MS
+  const prevDayUtcStart = todayUtcStart - DAY_MS
+
+  const day1hMap = new Map<number, OkxCandlePoint[]>()
+  let oldest1hDay = Infinity
+  for (const c of candles1h) {
+    const dayStart = Math.floor(c.time / DAY_MS) * DAY_MS
+    if (dayStart < oldest1hDay) oldest1hDay = dayStart
+    if (dayStart >= todayUtcStart) continue
+    const list = day1hMap.get(dayStart)
+    if (list) list.push(c)
+    else day1hMap.set(dayStart, [c])
+  }
+
+  const prevDay15mCandles = candles15m.filter(
+    c => c.time >= prevDayUtcStart && c.time < todayUtcStart,
+  )
+
+  const candidateDays = new Set<number>(day1hMap.keys())
+  if (prevDay15mCandles.length > 0) candidateDays.add(prevDayUtcStart)
+
+  // Drop truncated leading partial UTC day from long 1H history when < 12 bars exist
+  if (candles1h.length >= 48 && Number.isFinite(oldest1hDay) && oldest1hDay < todayUtcStart) {
+    const oldestCount = day1hMap.get(oldest1hDay)?.length ?? 0
+    const coveredByPrev15m = oldest1hDay === prevDayUtcStart && prevDay15mCandles.length > 0
+    if (oldestCount < 12 && !coveredByPrev15m) {
+      candidateDays.delete(oldest1hDay)
+    }
+  }
+
+  const sortedDays = Array.from(candidateDays).sort((a, b) => a - b)
+  if (sortedDays.length === 0) return []
+
+  const taker15mMap = new Map<number, OkxTakerVolumeBucket>()
+  for (const tb of taker15m) taker15mMap.set(tb.time, tb)
+  const taker1hMap = new Map<number, OkxTakerVolumeBucket>()
+  for (const tb of taker1h) taker1hMap.set(tb.time, tb)
+
+  const allSubsequentCandles = [...candles1h, ...candles15m]
+  const magnets: NakedPocMagnet[] = []
+
+  sortedDays.forEach((dayStart, idx) => {
+    const usePrev15m = dayStart === prevDayUtcStart && prevDay15mCandles.length > 0
+    const dayCandles = usePrev15m ? prevDay15mCandles : (day1hMap.get(dayStart) ?? [])
+    const takerMap = usePrev15m ? taker15mMap : taker1hMap
+
+    const dayProfile = computeUtcDayProfile({ dayCandles, takerMap, dayStart })
+    if (!dayProfile) return
+
+    const dayEnd = dayStart + DAY_MS
+    const pocLow = dayProfile.pocPrice
+    const pocHigh = dayProfile.pocPrice + dayProfile.stepUsd
+
+    let tested = false
+    for (const later of allSubsequentCandles) {
+      if (later.time < dayEnd) continue
+      const lo = Math.min(later.low, later.open, later.close)
+      const hi = Math.max(later.high, later.open, later.close)
+      if (lo < pocHigh && hi >= pocLow) {
+        tested = true
         break
       }
     }
 
-    if (!testedLater) {
-      nakedByPrice.set(alignedPoc, {
-        candleIndex: closedCandle.index,
-        candleStart: closedCandle.start,
-        price: alignedPoc,
-        volumeBtc: closedCandle.pocVolumeBtc,
-        directionFromClose:
-          alignedPoc > latestRowPrice ? 'above' : alignedPoc < latestRowPrice ? 'below' : 'at',
-        distanceUsd: Math.round(alignedPoc - latestPrice),
-      })
+    if (!tested) {
+      for (const t of liveTrades) {
+        if (t.time < dayEnd) continue
+        if (t.price >= pocLow && t.price < pocHigh) {
+          tested = true
+          break
+        }
+      }
+    }
+
+    if (tested) return
+
+    const rowPrice = Math.floor(dayProfile.pocPrice / ladderStepUsd) * ladderStepUsd
+    const distanceUsd = Math.round(dayProfile.pocPrice - latestPrice)
+    const distancePct =
+      latestPrice > 0 ? Number((((dayProfile.pocPrice - latestPrice) / latestPrice) * 100).toFixed(2)) : null
+
+    magnets.push({
+      candleIndex: idx,
+      candleStart: dayStart,
+      price: dayProfile.pocPrice,
+      rowPrice,
+      onLadder: rowPrice >= ladderMinRowPrice && rowPrice <= ladderMaxRowPrice,
+      kind: 'daily',
+      originLabel: `${dayProfile.dateLabel.replace(' UTC', '')} dPOC`,
+      volumeBtc: dayProfile.pocVolumeBtc,
+      directionFromClose:
+        dayProfile.pocPrice > latestPrice ? 'above' : dayProfile.pocPrice < latestPrice ? 'below' : 'at',
+      distanceUsd,
+      distancePct,
+    })
+  })
+
+  return magnets.sort(
+    (a, b) => Math.abs(a.distanceUsd) - Math.abs(b.distanceUsd) || b.candleStart - a.candleStart,
+  )
+}
+
+export function evaluateSessionProfile(params: {
+  trades: readonly FootprintTrade[]
+  candles: readonly FootprintCandle[]
+  stepOption?: FootprintStepOption
+  rangeId?: SvpRangeId
+  now?: number
+  timeframeShort?: string
+  bucketMs?: number
+  backfill?: {
+    candles?: readonly OkxCandlePoint[]
+    takerBuckets?: readonly OkxTakerVolumeBucket[]
+  }
+  svpHistory?: {
+    candles15m?: readonly OkxCandlePoint[]
+    taker15m?: readonly OkxTakerVolumeBucket[]
+    candles1h?: readonly OkxCandlePoint[]
+    taker1h?: readonly OkxTakerVolumeBucket[]
+  }
+}): SessionProfileEvaluation {
+  const {
+    trades,
+    candles,
+    stepOption = 'auto',
+    rangeId = 'chart',
+    now: nowParam,
+    timeframeShort,
+    bucketMs: bucketMsParam,
+    backfill,
+    svpHistory,
+  } = params
+  const defaultStep = stepOption === 'auto' ? 10 : stepOption
+  const effectiveNow =
+    nowParam ?? (candles.length > 0 ? candles[candles.length - 1].end : Date.now())
+
+  type ParsedTrade = { time: number; price: number; side: 'buy' | 'sell'; sats: bigint }
+  const allValidTrades: ParsedTrade[] = []
+  let earliestLiveTime = Infinity
+  let latestLiveTime = -Infinity
+  let latestLivePrice: number | null = null
+
+  for (const t of trades) {
+    const price = Number(t.price)
+    if (!Number.isFinite(price) || price <= 0) continue
+    const sats = parseTradeSats(t.quantityBtc)
+    if (sats === null) continue
+    allValidTrades.push({ time: t.time, price, side: t.side, sats })
+    if (t.time < earliestLiveTime) earliestLiveTime = t.time
+    if (t.time >= latestLiveTime) {
+      latestLiveTime = t.time
+      latestLivePrice = price
     }
   }
 
-  const nakedPocs = Array.from(nakedByPrice.values()).sort((a, b) => b.candleIndex - a.candleIndex)
-  const nakedPriceSet = new Set(nakedPocs.map(n => n.price))
+  const prevDayLevels = evaluatePrevDayReference({
+    candles15m: svpHistory?.candles15m,
+    taker15m: svpHistory?.taker15m,
+    now: effectiveNow,
+    latestPrice: latestLivePrice,
+  })
 
-  const rows: SessionProfileRow[] = rawRows.map((row, r) => {
+  const todayUtcStart = Math.floor(effectiveNow / DAY_MS) * DAY_MS
+  const prevDayUtcStart = todayUtcStart - DAY_MS
+  const hasPriorDailyHistory =
+    (svpHistory?.candles1h?.some(c => c.time < todayUtcStart) ?? false) ||
+    (svpHistory?.candles15m?.some(c => c.time < todayUtcStart) ?? false)
+  const nakedPocMode: 'daily' | 'candle' =
+    rangeId !== 'chart' && hasPriorDailyHistory ? 'daily' : 'candle'
+
+  let rangeStart = 0
+  let rangeEnd = effectiveNow + 1
+  let barMs = 900_000
+  let allowLiveOverlay = true
+  let rangeLabel = '24h'
+  let candidateCandles: CandleProfileSource[] = []
+  let takerList: readonly OkxTakerVolumeBucket[] = []
+
+  if (rangeId === '24h') {
+    rangeStart = effectiveNow - DAY_MS
+    rangeEnd = effectiveNow + 1
+    barMs = 900_000
+    rangeLabel = '24h'
+    candidateCandles = (svpHistory?.candles15m ?? []).filter(
+      c => c.time + barMs > rangeStart && c.time < rangeEnd,
+    )
+    takerList = svpHistory?.taker15m ?? []
+  } else if (rangeId === 'today') {
+    rangeStart = todayUtcStart
+    rangeEnd = effectiveNow + 1
+    barMs = 900_000
+    rangeLabel = 'Today (UTC)'
+    candidateCandles = (svpHistory?.candles15m ?? []).filter(
+      c => c.time >= rangeStart && c.time < rangeEnd,
+    )
+    takerList = svpHistory?.taker15m ?? []
+  } else if (rangeId === 'prevDay') {
+    rangeStart = prevDayUtcStart
+    rangeEnd = todayUtcStart
+    barMs = 900_000
+    allowLiveOverlay = false
+    rangeLabel = 'Prev Day'
+    candidateCandles = (svpHistory?.candles15m ?? []).filter(
+      c => c.time >= rangeStart && c.time < rangeEnd,
+    )
+    takerList = svpHistory?.taker15m ?? []
+  } else if (rangeId === '3d') {
+    rangeStart = effectiveNow - 3 * DAY_MS
+    rangeEnd = effectiveNow + 1
+    barMs = 3_600_000
+    rangeLabel = '3-Day'
+    candidateCandles = (svpHistory?.candles1h ?? []).filter(
+      c => c.time + barMs > rangeStart && c.time < rangeEnd,
+    )
+    takerList = svpHistory?.taker1h ?? []
+  } else if (rangeId === '7d') {
+    rangeStart = effectiveNow - 7 * DAY_MS
+    rangeEnd = effectiveNow + 1
+    barMs = 3_600_000
+    rangeLabel = '7-Day'
+    candidateCandles = (svpHistory?.candles1h ?? []).filter(
+      c => c.time + barMs > rangeStart && c.time < rangeEnd,
+    )
+    takerList = svpHistory?.taker1h ?? []
+  } else {
+    // 'chart': match top timeframe bar using up to 24 backfilled bars + live trades
+    const inferredBarMs =
+      candles.length > 0 ? Math.max(60_000, candles[0].end - candles[0].start) : 60_000
+    barMs = bucketMsParam && bucketMsParam > 0 ? bucketMsParam : inferredBarMs
+    rangeLabel = timeframeShort ? `${timeframeShort.toUpperCase()} Chart` : '6-bar'
+    const currentBucketStart = Math.floor(effectiveNow / barMs) * barMs
+    const currentBucketEnd = currentBucketStart + barMs
+    const chartCandles = (backfill?.candles ?? [])
+      .filter(c => c.time < currentBucketEnd)
+      .slice(-CHART_SVP_BAR_COUNT)
+
+    if (chartCandles.length > 0) {
+      const candleFirst = chartCandles[0].time
+      const fpFirst = candles.length > 0 ? candles[0].start : candleFirst
+      rangeStart = Math.min(candleFirst, fpFirst)
+      rangeEnd = Math.max(
+        currentBucketEnd,
+        candles.length > 0 ? candles[candles.length - 1].end : currentBucketEnd,
+      )
+      candidateCandles = chartCandles
+      takerList = backfill?.takerBuckets ?? []
+    } else if (candles.length > 0) {
+      rangeStart = candles[0].start
+      rangeEnd = candles[candles.length - 1].end
+      // Include any already-backfilled FootprintCandle slots that have no raw trades in `trades`
+      for (const c of candles) {
+        if (
+          c.tradeCount > 0 &&
+          c.open !== null &&
+          c.high !== null &&
+          c.low !== null &&
+          c.close !== null &&
+          c.totalBtc > 0
+        ) {
+          const hasRawForSlot = allValidTrades.some(t => t.time >= c.start && t.time < c.end)
+          if (!hasRawForSlot) {
+            candidateCandles.push({
+              time: c.start,
+              open: c.open,
+              high: c.high,
+              low: c.low,
+              close: c.close,
+              volumeBtc: c.totalBtc,
+              buyBtc: c.buyBtc,
+              sellBtc: c.sellBtc,
+            })
+          }
+        }
+      }
+    } else {
+      rangeStart = currentBucketStart
+      rangeEnd = currentBucketEnd
+    }
+  }
+
+  candidateCandles = [...candidateCandles].sort((a, b) => a.time - b.time)
+  const takerMap = new Map<number, OkxTakerVolumeBucket>()
+  for (const tb of takerList) takerMap.set(tb.time, tb)
+
+  const windowLiveTrades = allowLiveOverlay
+    ? allValidTrades.filter(t => t.time >= rangeStart && t.time < rangeEnd)
+    : []
+
+  const liveBySlot = new Map<number, ParsedTrade[]>()
+  for (const t of windowLiveTrades) {
+    const slotStart = barMs > 0 ? Math.floor(t.time / barMs) * barMs : 0
+    const list = liveBySlot.get(slotStart)
+    if (list) list.push(t)
+    else liveBySlot.set(slotStart, [t])
+  }
+
+  const candlesToDistribute: CandleProfileSource[] = []
+  const candleCoveredSlots = new Set<number>()
+
+  for (const c of candidateCandles) {
+    const slotTrades = barMs > 0 ? liveBySlot.get(c.time) : undefined
+    let slotLiveBtc = 0
+    if (slotTrades) {
+      for (const t of slotTrades) slotLiveBtc += Number(t.sats) / 1e8
+    }
+    const useExactLiveForSlot =
+      allowLiveOverlay &&
+      slotTrades !== undefined &&
+      slotTrades.length > 0 &&
+      (earliestLiveTime <= c.time || (c.volumeBtc > 0 && slotLiveBtc >= c.volumeBtc * 0.9))
+
+    if (!useExactLiveForSlot) {
+      candlesToDistribute.push(c)
+      candleCoveredSlots.add(c.time)
+    }
+  }
+
+  const liveTradesToUse: ParsedTrade[] = []
+  for (const [slotStart, list] of liveBySlot.entries()) {
+    if (!candleCoveredSlots.has(slotStart)) {
+      liveTradesToUse.push(...list)
+    }
+  }
+  liveTradesToUse.sort((a, b) => a.time - b.time)
+
+  const emptySourceLabel =
+    rangeId === '24h' || rangeId === 'today' || rangeId === 'prevDay'
+      ? '15m candles'
+      : rangeId === '3d' || rangeId === '7d'
+        ? '1H candles'
+        : 'Live ticks only'
+
+  if (candlesToDistribute.length === 0 && liveTradesToUse.length === 0) {
+    return {
+      rangeId,
+      rangeLabel,
+      sourceLabel: emptySourceLabel,
+      candleCount: 0,
+      stepUsd: defaultStep,
+      totalBtc: 0,
+      deltaBtc: 0,
+      tradeCount: 0,
+      latestPrice: latestLivePrice,
+      sessionPocPrice: null,
+      sessionPocVolumeBtc: 0,
+      sessionVahPrice: null,
+      sessionValPrice: null,
+      valueStatus: 'waiting',
+      prevDayLevels,
+      nakedPocMode,
+      nakedPocs: [],
+      rows: [],
+      badge: { label: 'Waiting for trades', tone: 'blue' },
+      headline: `Waiting for trades to build ${rangeLabel} Profile`,
+      oneLiner: 'Candles and live trades across this range will stack into one Value Area and POC.',
+    }
+  }
+
+  let minPrice = Infinity
+  let maxPrice = -Infinity
+  for (const c of candlesToDistribute) {
+    const lo = Math.min(c.low, c.open, c.close)
+    const hi = Math.max(c.high, c.open, c.close)
+    if (lo < minPrice) minPrice = lo
+    if (hi > maxPrice) maxPrice = hi
+  }
+  for (const t of liveTradesToUse) {
+    if (t.price < minPrice) minPrice = t.price
+    if (t.price > maxPrice) maxPrice = t.price
+  }
+
+  const latestCandleClose =
+    candidateCandles.length > 0 ? candidateCandles[candidateCandles.length - 1].close : null
+  const latestPrice = latestLivePrice ?? latestCandleClose
+
+  if (!Number.isFinite(minPrice) || !Number.isFinite(maxPrice) || latestPrice === null) {
+    return {
+      rangeId,
+      rangeLabel,
+      sourceLabel: emptySourceLabel,
+      candleCount: 0,
+      stepUsd: defaultStep,
+      totalBtc: 0,
+      deltaBtc: 0,
+      tradeCount: 0,
+      latestPrice,
+      sessionPocPrice: null,
+      sessionPocVolumeBtc: 0,
+      sessionVahPrice: null,
+      sessionValPrice: null,
+      valueStatus: 'waiting',
+      prevDayLevels,
+      nakedPocMode,
+      nakedPocs: [],
+      rows: [],
+      badge: { label: 'Waiting for trades', tone: 'blue' },
+      headline: `Waiting for trades to build ${rangeLabel} Profile`,
+      oneLiner: 'Candles and live trades across this range will stack into one Value Area and POC.',
+    }
+  }
+
+  const baseStep = chooseSvpStepUsd(maxPrice - minPrice, stepOption)
+  const effectiveStep = widenStepForRange(minPrice, maxPrice, baseStep, MAX_SVP_ROWS)
+  const minRowIdx = Math.floor(minPrice / effectiveStep)
+  const maxRowIdx = Math.floor(maxPrice / effectiveStep)
+
+  const cellMap = new Map<number, { buyBtc: number; sellBtc: number }>()
+  for (const c of candlesToDistribute) {
+    distributeCandleToCells({
+      candle: c,
+      taker: takerMap.get(c.time),
+      effectiveStep,
+      cellMap,
+    })
+  }
+
+  for (const item of liveTradesToUse) {
+    const rowIdx = Math.floor(item.price / effectiveStep)
+    const existing = cellMap.get(rowIdx) ?? { buyBtc: 0, sellBtc: 0 }
+    const btc = Number(item.sats) / 1e8
+    if (item.side === 'buy') existing.buyBtc += btc
+    else existing.sellBtc += btc
+    cellMap.set(rowIdx, existing)
+  }
+
+  const referenceClose =
+    rangeId === 'prevDay' && latestCandleClose !== null ? latestCandleClose : latestPrice
+  const grid = buildRawProfileGrid({
+    cellMap,
+    minRowIdx,
+    maxRowIdx,
+    effectiveStep,
+    referenceClose,
+  })
+
+  if (grid.totalBtc <= 0) {
+    return {
+      rangeId,
+      rangeLabel,
+      sourceLabel: emptySourceLabel,
+      candleCount: 0,
+      stepUsd: effectiveStep,
+      totalBtc: 0,
+      deltaBtc: 0,
+      tradeCount: 0,
+      latestPrice,
+      sessionPocPrice: null,
+      sessionPocVolumeBtc: 0,
+      sessionVahPrice: null,
+      sessionValPrice: null,
+      valueStatus: 'waiting',
+      prevDayLevels,
+      nakedPocMode,
+      nakedPocs: [],
+      rows: [],
+      badge: { label: 'Waiting for trades', tone: 'blue' },
+      headline: `Waiting for trades to build ${rangeLabel} Profile`,
+      oneLiner: 'Candles and live trades across this range will stack into one Value Area and POC.',
+    }
+  }
+
+  const latestRowPrice = Math.floor(latestPrice / effectiveStep) * effectiveStep
+  const ladderMinRowPrice = minRowIdx * effectiveStep
+  const ladderMaxRowPrice = maxRowIdx * effectiveStep
+
+  let nakedPocs: NakedPocMagnet[] = []
+  if (nakedPocMode === 'daily') {
+    nakedPocs = evaluateDailyNakedPocs({
+      candles15m: svpHistory?.candles15m,
+      taker15m: svpHistory?.taker15m,
+      candles1h: svpHistory?.candles1h,
+      taker1h: svpHistory?.taker1h,
+      liveTrades: allValidTrades,
+      now: effectiveNow,
+      latestPrice,
+      ladderStepUsd: effectiveStep,
+      ladderMinRowPrice,
+      ladderMaxRowPrice,
+    })
+  } else {
+    // Candle nPOC detection (used in Chart TF mode or before daily REST history loads)
+    const nakedByPrice = new Map<number, NakedPocMagnet>()
+    for (let i = 0; i < candles.length - 1; i++) {
+      const closedCandle = candles[i]
+      if (closedCandle.tradeCount === 0 || closedCandle.pocPrice === null) continue
+      const alignedPoc = Math.floor(closedCandle.pocPrice / effectiveStep) * effectiveStep
+
+      let testedLater = false
+      for (let j = i + 1; j < candles.length; j++) {
+        const later = candles[j]
+        if (later.tradeCount === 0 || later.low === null || later.high === null) continue
+        const laterLowRow = Math.floor(later.low / effectiveStep) * effectiveStep
+        const laterHighRow = Math.floor(later.high / effectiveStep) * effectiveStep
+        if (laterLowRow <= alignedPoc && alignedPoc <= laterHighRow) {
+          testedLater = true
+          break
+        }
+      }
+
+      if (!testedLater) {
+        for (const t of allValidTrades) {
+          if (t.time < closedCandle.end) continue
+          const tradeRow = Math.floor(t.price / effectiveStep) * effectiveStep
+          if (tradeRow === alignedPoc) {
+            testedLater = true
+            break
+          }
+        }
+      }
+
+      if (!testedLater) {
+        const distancePct =
+          latestPrice > 0 ? Number((((alignedPoc - latestPrice) / latestPrice) * 100).toFixed(2)) : null
+        nakedByPrice.set(alignedPoc, {
+          candleIndex: closedCandle.index,
+          candleStart: closedCandle.start,
+          price: alignedPoc,
+          rowPrice: alignedPoc,
+          onLadder: alignedPoc >= ladderMinRowPrice && alignedPoc <= ladderMaxRowPrice,
+          kind: 'candle',
+          originLabel: `${new Date(closedCandle.start).toISOString().slice(11, 16)} UTC`,
+          volumeBtc: closedCandle.pocVolumeBtc,
+          directionFromClose:
+            alignedPoc > latestRowPrice ? 'above' : alignedPoc < latestRowPrice ? 'below' : 'at',
+          distanceUsd: Math.round(alignedPoc - latestPrice),
+          distancePct,
+        })
+      }
+    }
+    nakedPocs = Array.from(nakedByPrice.values()).sort((a, b) => b.candleIndex - a.candleIndex)
+  }
+
+  const nakedByRowPrice = new Map<number, NakedPocMagnet[]>()
+  for (const n of nakedPocs) {
+    if (!n.onLadder) continue
+    const list = nakedByRowPrice.get(n.rowPrice)
+    if (list) list.push(n)
+    else nakedByRowPrice.set(n.rowPrice, [n])
+  }
+
+  const showPrevMarkers = rangeId !== 'prevDay' && prevDayLevels !== null
+  const prevPocRow = showPrevMarkers
+    ? Math.floor(prevDayLevels.pocPrice / effectiveStep) * effectiveStep
+    : null
+  const prevVahRow = showPrevMarkers
+    ? Math.floor(prevDayLevels.vahPrice / effectiveStep) * effectiveStep
+    : null
+  const prevValRow = showPrevMarkers
+    ? Math.floor(prevDayLevels.valPrice / effectiveStep) * effectiveStep
+    : null
+
+  const rows: SessionProfileRow[] = grid.rawRows.map((row, r) => {
     const buySharePct = row.totalBtc > 0 ? Math.round((row.buyBtc / row.totalBtc) * 100) : 0
     const sellSharePct = row.totalBtc > 0 ? 100 - buySharePct : 0
+    const rowMagnets = nakedByRowPrice.get(row.price) ?? []
     return {
       ...row,
       totalWidthPct:
-        maxRowTotalBtc > 0 && row.totalBtc > 0 ? Math.max(4, Math.round((row.totalBtc / maxRowTotalBtc) * 100)) : 0,
+        grid.maxRowTotalBtc > 0 && row.totalBtc > 0
+          ? Math.max(4, Math.round((row.totalBtc / grid.maxRowTotalBtc) * 100))
+          : 0,
       buySharePct,
       sellSharePct,
-      isSessionPoc: r === pocIdx,
-      isVah: row.price === vahPrice,
-      isVal: row.price === valPrice,
-      inValueArea: vaIndices.has(r),
+      isSessionPoc: r === grid.pocIdx,
+      isVah: row.price === grid.vahPrice,
+      isVal: row.price === grid.valPrice,
+      inValueArea: grid.vaIndices.has(r),
       isLatestRow: row.price === latestRowPrice,
-      isNakedPoc: nakedPriceSet.has(row.price),
+      isNakedPoc: rowMagnets.length > 0,
+      nakedPocCount: rowMagnets.length,
+      nakedPocLabels: rowMagnets.map(n => `${n.originLabel} (${formatPriceInt(n.price)})`),
+      isPrevDayPoc: prevPocRow !== null && row.price === prevPocRow,
+      isPrevDayVah: prevVahRow !== null && row.price === prevVahRow,
+      isPrevDayVal: prevValRow !== null && row.price === prevValRow,
     }
   })
 
   const valueStatus: SessionProfileEvaluation['valueStatus'] =
-    latestRowPrice > vahPrice ? 'above' : latestRowPrice < valPrice ? 'below' : 'inside'
+    latestRowPrice > grid.vahPrice ? 'above' : latestRowPrice < grid.valPrice ? 'below' : 'inside'
 
-  const magnetNote = nakedPocs[0] ? `, with an untested ${formatPriceInt(nakedPocs[0].price)} nPOC magnet` : ''
+  const magnetLabel = nakedPocMode === 'daily' ? 'Daily nPOC' : 'nPOC'
+  const magnetNote = nakedPocs[0]
+    ? `, with an untested ${formatPriceInt(nakedPocs[0].price)} ${magnetLabel} magnet`
+    : ''
 
   let badge: SessionProfileEvaluation['badge']
   let headline: string
@@ -1162,8 +1935,8 @@ export function evaluateSessionProfile(params: {
           : 'Above Value Area',
       tone: 'teal',
     }
-    headline = 'Price accepted above the 6-bar Value Area'
-    oneLiner = `Holding above ${formatPriceInt(vahPrice)} VAH — buyers hold control${magnetNote}.`
+    headline = `Price accepted above the ${rangeLabel} Value Area`
+    oneLiner = `Holding above ${formatPriceInt(grid.vahPrice)} VAH — buyers hold control${magnetNote}.`
   } else if (valueStatus === 'below') {
     badge = {
       label:
@@ -1172,8 +1945,8 @@ export function evaluateSessionProfile(params: {
           : 'Below Value Area',
       tone: 'rose',
     }
-    headline = 'Price pressing below the 6-bar Value Area'
-    oneLiner = `Trading below ${formatPriceInt(valPrice)} VAL — sellers hold control${magnetNote}.`
+    headline = `Price pressing below the ${rangeLabel} Value Area`
+    oneLiner = `Trading below ${formatPriceInt(grid.valPrice)} VAL — sellers hold control${magnetNote}.`
   } else {
     badge = {
       label:
@@ -1184,24 +1957,60 @@ export function evaluateSessionProfile(params: {
     }
     headline =
       nakedPocs.length > 0
-        ? 'Price inside value — untested POC magnet active'
-        : 'Price balancing around the Session POC'
+        ? `Price inside ${rangeLabel} value — untested POC magnet active`
+        : `Price balancing around the ${rangeLabel} POC`
     oneLiner = nakedPocs[0]
-      ? `Trading inside ${formatPriceInt(valPrice)}–${formatPriceInt(vahPrice)} with an untested ${formatPriceInt(nakedPocs[0].price)} nPOC magnet.`
-      : `70% of window volume traded between ${formatPriceInt(valPrice)} and ${formatPriceInt(vahPrice)} around ${formatPriceInt(sessionPocPrice)} POC.`
+      ? `Trading inside ${formatPriceInt(grid.valPrice)}–${formatPriceInt(grid.vahPrice)} with ${nakedPocs.length} untested ${magnetLabel}${nakedPocs.length === 1 ? '' : 's'} (nearest ${formatPriceInt(nakedPocs[0].price)}).`
+      : `70% of ${rangeLabel} volume traded between ${formatPriceInt(grid.valPrice)} and ${formatPriceInt(grid.vahPrice)} around ${formatPriceInt(grid.pocPrice)} POC.`
   }
 
+  const hasCandles = candlesToDistribute.length > 0
+  const hasLive = liveTradesToUse.length > 0
+  const sourceLabel =
+    rangeId === '24h' || rangeId === 'today' || rangeId === 'prevDay'
+      ? hasCandles && hasLive
+        ? '15m candles + live'
+        : hasCandles
+          ? '15m candles'
+          : 'Live ticks only'
+      : rangeId === '3d' || rangeId === '7d'
+        ? hasCandles && hasLive
+          ? '1H candles + live'
+          : hasCandles
+            ? '1H candles'
+            : 'Live ticks only'
+        : hasCandles && hasLive
+          ? 'Backfill + live'
+          : hasCandles
+            ? 'Candle backfill'
+            : 'Live ticks only'
+
+  let liveOnlySlotsCount = 0
+  for (const slotStart of liveBySlot.keys()) {
+    if (!candleCoveredSlots.has(slotStart)) liveOnlySlotsCount++
+  }
+  const candleCount = candlesToDistribute.length + liveOnlySlotsCount
+  const tradeCount =
+    liveTradesToUse.length +
+    candlesToDistribute.reduce((sum, c) => sum + Math.max(1, Math.round(c.volumeBtc * 10)), 0)
+
   return {
+    rangeId,
+    rangeLabel,
+    sourceLabel,
+    candleCount,
     stepUsd: effectiveStep,
-    totalBtc,
-    deltaBtc,
-    tradeCount: validTrades.length,
+    totalBtc: grid.totalBtc,
+    deltaBtc: grid.deltaBtc,
+    tradeCount,
     latestPrice,
-    sessionPocPrice,
-    sessionPocVolumeBtc,
-    sessionVahPrice: vahPrice,
-    sessionValPrice: valPrice,
+    sessionPocPrice: grid.pocPrice,
+    sessionPocVolumeBtc: grid.pocVolumeBtc,
+    sessionVahPrice: grid.vahPrice,
+    sessionValPrice: grid.valPrice,
     valueStatus,
+    prevDayLevels,
+    nakedPocMode,
     nakedPocs,
     rows,
     badge,

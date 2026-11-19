@@ -112,6 +112,20 @@ export type MarketEventItem = {
   time: number
 }
 
+export type SvpHistoryData = {
+  candles15m: readonly OkxCandlePoint[]
+  taker15m: readonly OkxTakerVolumeBucket[]
+  candles1h: readonly OkxCandlePoint[]
+  taker1h: readonly OkxTakerVolumeBucket[]
+}
+
+const emptySvpHistory: SvpHistoryData = {
+  candles15m: [],
+  taker15m: [],
+  candles1h: [],
+  taker1h: [],
+}
+
 export type LiveDashboardState = {
   status: string
   price: string | null
@@ -135,6 +149,7 @@ export type LiveDashboardState = {
     candles: readonly OkxCandlePoint[]
     takerBuckets: readonly OkxTakerVolumeBucket[]
   }
+  svpHistory: SvpHistoryData
 }
 
 const emptyOiRegime = evaluateOiRegime({
@@ -175,6 +190,25 @@ const emptySnapshot = (timeframeLabel: string): MarketSnapshot => ({
   recentShortLiqUsd: 0,
   timeframeLabel,
 })
+
+async function fetchSvpHistory(signal: AbortSignal): Promise<SvpHistoryData> {
+  const get = (url: string) =>
+    fetch(url, { signal })
+      .then(r => (r.ok ? r.json() : null))
+      .catch(() => null)
+  const [c15mJson, t15mJson, c1hJson, t1hJson] = await Promise.all([
+    get('https://www.okx.com/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=15m&limit=196'),
+    get('https://www.okx.com/api/v5/rubik/stat/taker-volume-contract?instId=BTC-USDT-SWAP&period=15m&unit=1&limit=100'),
+    get('https://www.okx.com/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=1H&limit=300'),
+    get('https://www.okx.com/api/v5/rubik/stat/taker-volume-contract?instId=BTC-USDT-SWAP&period=1H&unit=1&limit=100'),
+  ])
+  return {
+    candles15m: normalizeOkxCandles(c15mJson?.data),
+    taker15m: normalizeOkxTakerVolume(t15mJson?.data),
+    candles1h: normalizeOkxCandles(c1hJson?.data),
+    taker1h: normalizeOkxTakerVolume(t1hJson?.data),
+  }
+}
 
 async function fetchTradeContext(signal: AbortSignal): Promise<{ context: TradeContext; fundingRate: number | null }> {
   const get = (url: string) =>
@@ -637,6 +671,7 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
         candles: [],
         takerBuckets: [],
       },
+      svpHistory: emptySvpHistory,
     }
   })
 
@@ -697,6 +732,7 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
     let context: TradeContext = emptyContext
     let fundingRate: number | null = null
     let fundingTime: number | null = null
+    let svpHistory: SvpHistoryData = emptySvpHistory
     const contextController = new AbortController()
 
     const publish = () => {
@@ -954,6 +990,7 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
           candles: cached?.candles ?? [],
           takerBuckets: cached?.takerBuckets ?? [],
         },
+        svpHistory,
       })
     }
 
@@ -1123,6 +1160,27 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
     }
     void refreshContext()
     const contextTimer = setInterval(() => void refreshContext(), 5 * minute)
+    const refreshSvpHistory = async () => {
+      const next = await fetchSvpHistory(contextController.signal)
+      if (stopped) return
+      const updatedHistory: SvpHistoryData = {
+        candles15m: next.candles15m.length > 0 ? next.candles15m : svpHistory.candles15m,
+        taker15m: next.taker15m.length > 0 ? next.taker15m : svpHistory.taker15m,
+        candles1h: next.candles1h.length > 0 ? next.candles1h : svpHistory.candles1h,
+        taker1h: next.taker1h.length > 0 ? next.taker1h : svpHistory.taker1h,
+      }
+      if (
+        updatedHistory.candles15m !== svpHistory.candles15m ||
+        updatedHistory.taker15m !== svpHistory.taker15m ||
+        updatedHistory.candles1h !== svpHistory.candles1h ||
+        updatedHistory.taker1h !== svpHistory.taker1h
+      ) {
+        svpHistory = updatedHistory
+        publish()
+      }
+    }
+    void refreshSvpHistory()
+    const svpTimer = setInterval(() => void refreshSvpHistory(), 2 * minute)
     connect()
     const render = setInterval(publish, 5000)
     ping = setInterval(() => {
@@ -1138,6 +1196,7 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
       document.removeEventListener('visibilitychange', onVisibilityChange)
       clearInterval(render)
       clearInterval(contextTimer)
+      clearInterval(svpTimer)
       clearInterval(oiTimer)
       contextController.abort()
       if (ping) clearInterval(ping)
@@ -1156,7 +1215,12 @@ export function useLiveMarketData(timeframeId: TimeframeId = '1m', confirmationM
     const controller = new AbortController()
     const fetchBackfillFor = async (targetId: TimeframeId) => {
       const targetTf = getTimeframeOption(targetId)
-      const oiPeriod = targetTf.rubikPeriod === '1H' ? '1H' : targetTf.rubikPeriod ? '5m' : null
+      const oiPeriod =
+        targetTf.rubikPeriod === '1H' || targetTf.rubikPeriod === '4H'
+          ? '1H'
+          : targetTf.rubikPeriod
+            ? '5m'
+            : null
       try {
         const candleReq = fetch(
           `https://www.okx.com/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=${targetTf.candleBar}&limit=26`,

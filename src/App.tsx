@@ -261,6 +261,7 @@ function App() {
           <FootprintTab
             trades={live.trades}
             backfill={live.backfill}
+            svpHistory={live.svpHistory}
             timeframeShort={timeframe}
             timeframeLabel={live.timeframeLabel}
             bucketMs={getTimeframeOption(timeframe).bucketMs}

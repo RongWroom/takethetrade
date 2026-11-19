@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
+  evaluateDailyNakedPocs,
   evaluateFootprint,
   evaluateFpbsStats,
+  evaluatePrevDayReference,
   evaluateSessionProfile,
   evaluateTradeSizeFlow,
   formatFpbsCsv,
@@ -248,6 +250,328 @@ describe('evaluateSessionProfile', () => {
 
     expect(svp2.nakedPocs).toHaveLength(0)
     expect(svp2.rows.some(r => r.isNakedPoc)).toBe(false)
+  })
+
+  it('uses backfilled candles in chart mode so different timeframes produce distinct Value Areas', () => {
+    const tf15m = 15 * min
+    const tf1h = 60 * min
+    const now = Date.UTC(2026, 10, 18, 12, 5, 0)
+    const liveSlot15m = Date.UTC(2026, 10, 18, 12, 0, 0)
+
+    const liveTrades: FootprintTrade[] = [
+      makeTrade('live-1', liveSlot15m + 10_000, 'buy', 63_820, '0.20000000'),
+      makeTrade('live-2', liveSlot15m + 20_000, 'sell', 63_800, '0.10000000'),
+    ]
+
+    const candles15m = [
+      { time: liveSlot15m - 3 * tf15m, open: 63_500, high: 63_580, low: 63_480, close: 63_560, volumeBtc: 25 },
+      { time: liveSlot15m - 2 * tf15m, open: 63_560, high: 63_650, low: 63_540, close: 63_630, volumeBtc: 30 },
+      { time: liveSlot15m - tf15m, open: 63_630, high: 63_760, low: 63_620, close: 63_740, volumeBtc: 28 },
+    ]
+    const candles1h = [
+      { time: liveSlot15m - 3 * tf1h, open: 62_600, high: 62_900, low: 62_550, close: 62_850, volumeBtc: 120 },
+      { time: liveSlot15m - 2 * tf1h, open: 62_850, high: 63_200, low: 62_800, close: 63_150, volumeBtc: 140 },
+      { time: liveSlot15m - tf1h, open: 63_150, high: 63_600, low: 63_100, close: 63_550, volumeBtc: 110 },
+    ]
+
+    const fp15 = evaluateFootprint({
+      trades: liveTrades,
+      now,
+      bucketMs: tf15m,
+      backfill: { candles: candles15m },
+    })
+    const svp15 = evaluateSessionProfile({
+      trades: liveTrades,
+      candles: fp15.candles,
+      rangeId: 'chart',
+      now,
+      timeframeShort: '15m',
+      bucketMs: tf15m,
+      backfill: { candles: candles15m },
+    })
+
+    const fp1h = evaluateFootprint({
+      trades: liveTrades,
+      now,
+      bucketMs: tf1h,
+      backfill: { candles: candles1h },
+    })
+    const svp1h = evaluateSessionProfile({
+      trades: liveTrades,
+      candles: fp1h.candles,
+      rangeId: 'chart',
+      now,
+      timeframeShort: '1h',
+      bucketMs: tf1h,
+      backfill: { candles: candles1h },
+    })
+
+    expect(svp15.sessionValPrice).not.toBeNull()
+    expect(svp1h.sessionValPrice).not.toBeNull()
+    expect(svp1h.sessionValPrice!).toBeLessThan(svp15.sessionValPrice!)
+    expect(svp15.sourceLabel).toBe('Backfill + live')
+    expect(svp1h.totalBtc).toBeCloseTo(370.3, 4)
+  })
+
+  it('computes distinct Value Areas across 24h, today, prevDay, 3d, and 7d without double-counting live slots', () => {
+    const dayStart = Date.UTC(2026, 10, 18, 0, 0, 0)
+    const now = dayStart + 6 * 60 * min + 20_000 // 06:00:20 UTC
+    const current15mStart = dayStart + 6 * 60 * min
+
+    // Yesterday (Nov 17): lower swing around $61,500–$62,200
+    const prevDayCandles = [
+      { time: dayStart - 16 * 60 * min, open: 61_500, high: 61_800, low: 61_450, close: 61_750, volumeBtc: 80 },
+      { time: dayStart - 8 * 60 * min, open: 61_750, high: 62_100, low: 61_700, close: 62_000, volumeBtc: 120 },
+      { time: dayStart - 2 * 60 * min, open: 62_000, high: 62_250, low: 61_950, close: 62_150, volumeBtc: 60 },
+    ]
+    // Today (Nov 18): pushed up to $63,500–$63,900
+    const todayCandles = [
+      { time: dayStart + 1 * 60 * min, open: 63_400, high: 63_650, low: 63_350, close: 63_600, volumeBtc: 50 },
+      { time: dayStart + 3 * 60 * min, open: 63_600, high: 63_880, low: 63_580, close: 63_820, volumeBtc: 90 },
+      // Developing bar present in REST snapshot too; live trade covers full bar because earliestLiveTime <= current15mStart
+      { time: current15mStart, open: 63_820, high: 63_900, low: 63_800, close: 63_860, volumeBtc: 10 },
+    ]
+    const candles15m = [...prevDayCandles, ...todayCandles]
+
+    // 1H candles spanning 3D & 7D: heavy 7D base around $60,000, 3D cluster around $62,500
+    const candles1h = [
+      { time: dayStart - 5 * 24 * 60 * min, open: 59_800, high: 60_200, low: 59_700, close: 60_000, volumeBtc: 600 },
+      { time: dayStart - 2 * 24 * 60 * min, open: 62_300, high: 62_700, low: 62_200, close: 62_550, volumeBtc: 300 },
+      { time: dayStart + 2 * 60 * min, open: 63_500, high: 63_850, low: 63_450, close: 63_820, volumeBtc: 110 },
+    ]
+
+    const liveTrades: FootprintTrade[] = [
+      makeTrade('cur-1', current15mStart, 'buy', 63_860, '2.00000000'),
+    ]
+    const fp = evaluateFootprint({ trades: liveTrades, now, bucketMs: 15 * min })
+    const svpHistory = { candles15m, candles1h }
+
+    const svp24h = evaluateSessionProfile({
+      trades: liveTrades,
+      candles: fp.candles,
+      rangeId: '24h',
+      now,
+      svpHistory,
+    })
+    const svpToday = evaluateSessionProfile({
+      trades: liveTrades,
+      candles: fp.candles,
+      rangeId: 'today',
+      now,
+      svpHistory,
+    })
+    const svpPrevDay = evaluateSessionProfile({
+      trades: liveTrades,
+      candles: fp.candles,
+      rangeId: 'prevDay',
+      now,
+      svpHistory,
+    })
+    const svp3d = evaluateSessionProfile({
+      trades: liveTrades,
+      candles: fp.candles,
+      rangeId: '3d',
+      now,
+      svpHistory,
+    })
+    const svp7d = evaluateSessionProfile({
+      trades: liveTrades,
+      candles: fp.candles,
+      rangeId: '7d',
+      now,
+      svpHistory,
+    })
+
+    // No double counting of current15mStart (live 2.00 BTC replaces REST 10 BTC developing snapshot)
+    expect(svpToday.totalBtc).toBeCloseTo(142, 4) // 50 + 90 + 2
+    expect(svp24h.totalBtc).toBeCloseTo(402, 4) // 260 prevDay + 142 today
+    expect(svpPrevDay.totalBtc).toBeCloseTo(260, 4) // strict yesterday only; live trade excluded
+
+    // Distinct Value Areas & POCs
+    expect(svpPrevDay.sessionVahPrice!).toBeLessThan(svpToday.sessionValPrice!)
+    expect(svpPrevDay.valueStatus).toBe('above') // live price $63,860 is above yesterday's VA
+    expect(svp3d.sessionPocPrice!).toBeGreaterThan(svp7d.sessionPocPrice!)
+    expect(svpToday.prevDayLevels?.pocPrice).toBe(svpPrevDay.sessionPocPrice)
+    expect(svp24h.rows.some(r => r.isPrevDayPoc)).toBe(true)
+    expect(svpPrevDay.rows.some(r => r.isPrevDayPoc)).toBe(false)
+
+    // When live stream opened mid-bar (earliestLiveTime > current15mStart) with partial volume, keep REST candle (no double count)
+    const partialLive: FootprintTrade[] = [
+      makeTrade('cur-partial', current15mStart + 5_000, 'buy', 63_860, '2.00000000'),
+    ]
+    const svpTodayPartial = evaluateSessionProfile({
+      trades: partialLive,
+      candles: fp.candles,
+      rangeId: 'today',
+      now,
+      svpHistory,
+    })
+    expect(svpTodayPartial.totalBtc).toBeCloseTo(150, 4) // 50 + 90 + 10 REST snapshot
+  })
+})
+
+describe('evaluatePrevDayReference', () => {
+  it('returns null when no prior UTC day candles exist and classifies price position vs pVAH/pVAL', () => {
+    const dayStart = Date.UTC(2026, 10, 18, 0, 0, 0)
+    const now = dayStart + 4 * 60 * min
+
+    expect(evaluatePrevDayReference({ candles15m: [], now, latestPrice: 63_000 })).toBeNull()
+
+    const candles15m = [
+      { time: dayStart - 12 * 60 * min, open: 62_000, high: 62_250, low: 61_950, close: 62_150, volumeBtc: 100 },
+      { time: dayStart - 6 * 60 * min, open: 62_150, high: 62_450, low: 62_100, close: 62_350, volumeBtc: 150 },
+    ]
+
+    const above = evaluatePrevDayReference({ candles15m, now, latestPrice: 63_100 })
+    expect(above?.pricePosition).toBe('above-pvah')
+    expect(above?.dateLabel).toBe('Nov 17 UTC')
+
+    const inside = evaluatePrevDayReference({ candles15m, now, latestPrice: above!.pocPrice })
+    expect(inside?.pricePosition).toBe('inside-pva')
+
+    const below = evaluatePrevDayReference({ candles15m, now, latestPrice: 61_200 })
+    expect(below?.pricePosition).toBe('below-pval')
+  })
+})
+
+describe('evaluateDailyNakedPocs & Daily nPOC integration', () => {
+  it('computes Daily nPOCs across prior UTC days, reconciles onLadder vs off-range, tracks multi-nPOC rows, and clears on live touch', () => {
+    const dayMs = 86_400_000
+    const hour = 60 * min
+    const dayStart = Date.UTC(2026, 10, 18, 0, 0, 0) // Nov 18
+    const now = dayStart + 6 * hour + 15_000
+
+    // Nov 15 (day - 3): $59,950–$60,050 (untested!)
+    // Nov 16 (day - 2): $62,950–$63,050 (tested by Today's low at $62,950)
+    // Nov 17 (day - 1): $61,850–$62,000 (untested!)
+    const candles1h = [
+      { time: dayStart - 3 * dayMs + 8 * hour, open: 59_950, high: 60_050, low: 59_950, close: 60_020, volumeBtc: 200 },
+      { time: dayStart - 2 * dayMs + 8 * hour, open: 62_950, high: 63_050, low: 62_950, close: 63_020, volumeBtc: 200 },
+      { time: dayStart - 1 * dayMs + 8 * hour, open: 61_850, high: 62_000, low: 61_850, close: 61_950, volumeBtc: 250 },
+      { time: dayStart + 2 * hour, open: 63_000, high: 63_900, low: 62_950, close: 63_850, volumeBtc: 180 },
+    ]
+    const candles15m = [
+      // Prev Day (Nov 17) within last 24h
+      { time: dayStart - 4 * hour, open: 61_860, high: 62_000, low: 61_850, close: 61_940, volumeBtc: 140 },
+      { time: dayStart - 2 * hour, open: 61_940, high: 62_000, low: 61_880, close: 61_920, volumeBtc: 120 },
+      // Today (Nov 18): dips to 62,950 (tests Nov 16) then holds high at 63,850
+      { time: dayStart + 1 * hour, open: 63_100, high: 63_500, low: 62_950, close: 63_450, volumeBtc: 40 },
+      { time: dayStart + 4 * hour, open: 63_450, high: 63_900, low: 63_400, close: 63_850, volumeBtc: 160 },
+    ]
+    const liveTrades: FootprintTrade[] = [
+      makeTrade('dnp-1', dayStart + 6 * hour + 5_000, 'buy', 63_850, '1.00000000'),
+    ]
+    const fp = evaluateFootprint({ trades: liveTrades, now, bucketMs: 15 * min })
+    const svpHistory = { candles15m, candles1h }
+
+    const svp24h = evaluateSessionProfile({
+      trades: liveTrades,
+      candles: fp.candles,
+      rangeId: '24h',
+      now,
+      svpHistory,
+    })
+
+    expect(svp24h.nakedPocMode).toBe('daily')
+    // Nearest first: Nov 17 (~$61,900) then Nov 15 (~$60,000); Nov 16 ($63,000) excluded because Today touched it
+    expect(svp24h.nakedPocs).toHaveLength(2)
+    expect(svp24h.nakedPocs[0].originLabel).toBe('Nov 17 dPOC')
+    expect(svp24h.nakedPocs[0].price).toBe(svp24h.prevDayLevels?.pocPrice)
+    expect(svp24h.nakedPocs[0].onLadder).toBe(true)
+    expect(svp24h.nakedPocs[1].originLabel).toBe('Nov 15 dPOC')
+    expect(svp24h.nakedPocs[1].onLadder).toBe(false)
+
+    // Widening to 7D brings Nov 15 onto the ladder too
+    const svp7d = evaluateSessionProfile({
+      trades: liveTrades,
+      candles: fp.candles,
+      rangeId: '7d',
+      now,
+      svpHistory,
+    })
+    expect(svp7d.nakedPocs).toHaveLength(2)
+    expect(svp7d.nakedPocs.every(n => n.onLadder)).toBe(true)
+    expect(svp7d.rows.filter(r => r.isNakedPoc)).toHaveLength(2)
+
+    // Two distinct untested days landing in the same coarse row bucket report nakedPocCount = 2
+    const candlesTwoCloseDays = [
+      { time: dayStart - 4 * dayMs + 8 * hour, open: 60_000, high: 60_080, low: 60_000, close: 60_050, volumeBtc: 200 },
+      { time: dayStart - 3 * dayMs + 8 * hour, open: 60_120, high: 60_200, low: 60_120, close: 60_180, volumeBtc: 200 },
+      { time: dayStart + 2 * hour, open: 63_500, high: 63_900, low: 63_450, close: 63_850, volumeBtc: 180 },
+    ]
+    const svpCoarse = evaluateSessionProfile({
+      trades: liveTrades,
+      candles: fp.candles,
+      rangeId: '7d',
+      now,
+      svpHistory: { candles1h: candlesTwoCloseDays },
+    })
+    const groupedRow = svpCoarse.rows.find(r => r.nakedPocCount === 2)
+    expect(groupedRow).toBeDefined()
+    expect(groupedRow?.nakedPocLabels).toHaveLength(2)
+
+    // A live trade revisiting Nov 17's POC bin clears it immediately
+    const liveRevisit: FootprintTrade[] = [
+      ...liveTrades,
+      makeTrade('dnp-2', dayStart + 6 * hour + 10_000, 'sell', svp24h.nakedPocs[0].price + 1, '0.25000000'),
+    ]
+    const svpAfterTouch = evaluateSessionProfile({
+      trades: liveRevisit,
+      candles: fp.candles,
+      rangeId: '24h',
+      now: dayStart + 6 * hour + 16_000,
+      svpHistory,
+    })
+    expect(svpAfterTouch.nakedPocs.map(n => n.originLabel)).toEqual(['Nov 15 dPOC'])
+  })
+
+  it('skips a truncated leading partial UTC day when >= 48 hourly bars exist', () => {
+    const dayMs = 86_400_000
+    const hour = 60 * min
+    const dayStart = Date.UTC(2026, 10, 18, 0, 0, 0)
+    const now = dayStart + 4 * hour
+
+    // Oldest day (Nov 15) has only 3 bars (< 12); Nov 16 & Nov 17 have 24 bars each (total 51 >= 48)
+    const candles1h = [
+      // Partial leading day Nov 15 at $58,000 (should be skipped)
+      ...Array.from({ length: 3 }, (_, i) => ({
+        time: dayStart - 3 * dayMs + (21 + i) * hour,
+        open: 58_000,
+        high: 58_100,
+        low: 57_950,
+        close: 58_050,
+        volumeBtc: 50,
+      })),
+      // Full day Nov 16 at $61,000 (untested)
+      ...Array.from({ length: 24 }, (_, i) => ({
+        time: dayStart - 2 * dayMs + i * hour,
+        open: 61_000,
+        high: 61_150,
+        low: 60_950,
+        close: 61_050,
+        volumeBtc: 50,
+      })),
+      // Full day Nov 17 at $62,000 (untested)
+      ...Array.from({ length: 24 }, (_, i) => ({
+        time: dayStart - 1 * dayMs + i * hour,
+        open: 62_000,
+        high: 62_150,
+        low: 61_950,
+        close: 62_050,
+        volumeBtc: 50,
+      })),
+    ]
+
+    const magnets = evaluateDailyNakedPocs({
+      candles1h,
+      now,
+      latestPrice: 63_500,
+      ladderStepUsd: 100,
+      ladderMinRowPrice: 60_000,
+      ladderMaxRowPrice: 64_000,
+    })
+
+    expect(magnets.map(m => m.originLabel)).toEqual(['Nov 17 dPOC', 'Nov 16 dPOC'])
   })
 })
 

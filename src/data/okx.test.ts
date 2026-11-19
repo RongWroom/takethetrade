@@ -57,9 +57,10 @@ describe('OKX liquidation orders', () => {
 })
 
 describe('OKX timeframe options and REST normalizers', () => {
-  it('returns correct bucket duration and rubik period for 15m and 30m', () => {
+  it('returns correct bucket duration and rubik period for 15m, 30m, and 4h', () => {
     expect(getTimeframeOption('15m')).toMatchObject({ bucketMs: 900_000, candleBar: '15m', rubikPeriod: '15m' })
     expect(getTimeframeOption('30m')).toMatchObject({ bucketMs: 1_800_000, candleBar: '30m', rubikPeriod: '30m' })
+    expect(getTimeframeOption('4h')).toMatchObject({ bucketMs: 14_400_000, candleBar: '4H', rubikPeriod: '4H' })
   })
 
   it('normalizes and sorts OKX candles, taker volume, and open interest history oldest-first', () => {

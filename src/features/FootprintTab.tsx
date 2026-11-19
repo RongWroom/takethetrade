@@ -6,12 +6,15 @@ import {
   evaluateTradeSizeFlow,
   FOOTPRINT_STEP_OPTIONS,
   formatFpbsCsv,
+  SVP_RANGE_OPTIONS,
   type FootprintCandle,
   type FootprintStepOption,
   type FootprintTrade,
+  type SvpRangeId,
   type TradeSizeScope,
 } from '../domain/footprint'
 import type { OkxCandlePoint, OkxTakerVolumeBucket } from '../data/okx'
+import type { SvpHistoryData } from './LiveOverview'
 
 export type FolderTone = 'teal' | 'rose' | 'amber' | 'blue'
 
@@ -116,6 +119,17 @@ function formatVolCell(btc: number): string {
   return btc.toFixed(2)
 }
 
+function formatBtcAmount(btc: number): string {
+  if (btc >= 1000) return Math.round(btc).toLocaleString('en-US')
+  if (btc >= 100) return btc.toFixed(1)
+  return btc.toFixed(2)
+}
+
+function formatSignedUsd(usd: number): string {
+  const sign = usd >= 0 ? '+' : '-'
+  return `${sign}$${Math.abs(Math.round(usd)).toLocaleString('en-US')}`
+}
+
 function describeValuePosition(candle: FootprintCandle): string {
   if (candle.close === null || candle.vahPrice === null || candle.valPrice === null) {
     return 'Waiting for trades'
@@ -129,6 +143,7 @@ function describeValuePosition(candle: FootprintCandle): string {
 export function FootprintTab({
   trades,
   backfill,
+  svpHistory,
   timeframeShort,
   timeframeLabel,
   bucketMs,
@@ -140,6 +155,7 @@ export function FootprintTab({
     candles: readonly OkxCandlePoint[]
     takerBuckets: readonly OkxTakerVolumeBucket[]
   }
+  svpHistory?: SvpHistoryData
   timeframeShort: string
   timeframeLabel: string
   bucketMs: number
@@ -148,9 +164,13 @@ export function FootprintTab({
 }) {
   const [activeFolder, setActiveFolder] = useState<'ladder' | 'tsize' | 'svp' | 'fpbs'>('ladder')
   const [stepOption, setStepOption] = useState<FootprintStepOption>('auto')
+  const [svpRange, setSvpRange] = useState<SvpRangeId>('24h')
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null)
   const [sizeScope, setSizeScope] = useState<TradeSizeScope>('window')
   const [fallbackNow, setFallbackNow] = useState(() => Date.now())
+  const supportsFocusGroup = typeof HTMLElement !== 'undefined' && 'focusGroup' in HTMLElement.prototype
+  const svpToolbarRef = useRef<HTMLDivElement>(null)
+  const [svpToolbarFocusIdx, setSvpToolbarFocusIdx] = useState(0)
 
   useEffect(() => {
     const id = setInterval(() => setFallbackNow(Date.now()), 5000)
@@ -180,8 +200,40 @@ export function FootprintTab({
   const sizeStart = sizeScope === 'candle' ? inspected.start : evaluation.candles[0].start
   const sizeEnd = sizeScope === 'candle' ? inspected.end : evaluation.candles[evaluation.candles.length - 1].end
   const sizeFlow = evaluateTradeSizeFlow({ trades, start: sizeStart, end: sizeEnd })
-  const sessionProfile = evaluateSessionProfile({ trades, candles: evaluation.candles, stepOption })
+  const sessionProfile = evaluateSessionProfile({
+    trades,
+    candles: evaluation.candles,
+    stepOption,
+    rangeId: svpRange,
+    now,
+    timeframeShort,
+    bucketMs,
+    backfill,
+    svpHistory,
+  })
+  const onLadderNpocCount = sessionProfile.nakedPocs.filter(n => n.onLadder).length
+  const offLadderNpocCount = sessionProfile.nakedPocs.length - onLadderNpocCount
   const fpbs = evaluateFpbsStats(evaluation.candles)
+
+  const handleSvpToolbarKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (supportsFocusGroup) return
+    const bar = svpToolbarRef.current
+    if (!bar) return
+    const items = Array.from(bar.querySelectorAll<HTMLButtonElement>('button'))
+    if (items.length === 0) return
+    const currentIdx = items.indexOf(e.target as HTMLButtonElement)
+    const activeItemIdx = currentIdx >= 0 ? currentIdx : svpToolbarFocusIdx
+    const rtl = getComputedStyle(bar).direction === 'rtl'
+    let nextIdx: number | null = null
+    if (e.key === 'ArrowRight') nextIdx = (activeItemIdx + (rtl ? -1 : 1) + items.length) % items.length
+    else if (e.key === 'ArrowLeft') nextIdx = (activeItemIdx + (rtl ? 1 : -1) + items.length) % items.length
+    else if (e.key === 'Home') nextIdx = 0
+    else if (e.key === 'End') nextIdx = items.length - 1
+    if (nextIdx === null) return
+    e.preventDefault()
+    setSvpToolbarFocusIdx(nextIdx)
+    items[nextIdx].focus()
+  }
 
   const handleExportCsv = () => {
     const csv = formatFpbsCsv(fpbs)
@@ -668,20 +720,67 @@ export function FootprintTab({
             <div className="fp-title-block">
               <div className="fp-eyebrow-row">
                 <span className="eyebrow">
-                  SECTION 3 · SESSION VOLUME PROFILE &amp; MAGNETS ({timeframeShort.toUpperCase()})
+                  SECTION 3 · SESSION VOLUME PROFILE ({sessionProfile.rangeLabel.toUpperCase()})
                 </span>
                 <span className={`fp-verdict-badge tone-${sessionProfile.badge.tone}`}>
                   {sessionProfile.badge.label}
                 </span>
                 <span className="fp-meta-chip">
-                  6-bar {timeframeShort} profile · ${sessionProfile.stepUsd} steps · {sessionProfile.tradeCount}{' '}
-                  {sessionProfile.tradeCount === 1 ? 'trade' : 'trades'}
+                  {sessionProfile.rangeLabel} · {sessionProfile.sourceLabel} · ${sessionProfile.stepUsd} steps
                 </span>
               </div>
               <h2 className="fp-headline">{sessionProfile.headline}</h2>
             </div>
 
-            {stepPicker}
+            <div
+              ref={svpToolbarRef}
+              role="toolbar"
+              aria-label="Session profile controls"
+              aria-controls="fp-svp-ladder"
+              className="fp-svp-toolbar"
+              onKeyDown={handleSvpToolbarKeyDown}
+              {...({ focusgroup: 'toolbar wrap' } as Record<string, string>)}
+            >
+              <div className="fp-range-picker" role="group" aria-label="Select profile range">
+                {SVP_RANGE_OPTIONS.map((opt, idx) => (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    className={`fp-step-btn ${svpRange === opt.id ? 'active' : ''}`}
+                    aria-pressed={svpRange === opt.id}
+                    title={opt.description}
+                    tabIndex={supportsFocusGroup ? undefined : svpToolbarFocusIdx === idx ? 0 : -1}
+                    onFocus={() => {
+                      if (!supportsFocusGroup) setSvpToolbarFocusIdx(idx)
+                    }}
+                    onClick={() => setSvpRange(opt.id)}
+                  >
+                    {opt.shortLabel}
+                  </button>
+                ))}
+              </div>
+              <span role="separator" aria-orientation="vertical" className="fp-toolbar-sep" />
+              <div className="fp-step-picker" role="group" aria-label="Select footprint price step">
+                {FOOTPRINT_STEP_OPTIONS.map((opt, idx) => {
+                  const toolbarIdx = SVP_RANGE_OPTIONS.length + idx
+                  return (
+                    <button
+                      key={String(opt.value)}
+                      type="button"
+                      className={`fp-step-btn ${stepOption === opt.value ? 'active' : ''}`}
+                      aria-pressed={stepOption === opt.value}
+                      tabIndex={supportsFocusGroup ? undefined : svpToolbarFocusIdx === toolbarIdx ? 0 : -1}
+                      onFocus={() => {
+                        if (!supportsFocusGroup) setSvpToolbarFocusIdx(toolbarIdx)
+                      }}
+                      onClick={() => setStepOption(opt.value)}
+                    >
+                      {opt.label}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
           </div>
 
           <div className="fp-scoreboard">
@@ -694,10 +793,10 @@ export function FootprintTab({
               <div className="fp-stat-foot">
                 <span>
                   {sessionProfile.tradeCount > 0
-                    ? `${sessionProfile.sessionPocVolumeBtc.toFixed(2)} ₿ across window`
+                    ? `${formatBtcAmount(sessionProfile.sessionPocVolumeBtc)} ₿ at POC · ${formatBtcAmount(sessionProfile.totalBtc)} ₿ total`
                     : 'No trades yet'}
                 </span>
-                <small>6-bar fairest price</small>
+                <small>{sessionProfile.rangeLabel} fairest price</small>
               </div>
             </article>
 
@@ -723,7 +822,7 @@ export function FootprintTab({
                         ? 'Inside Value Area'
                         : 'Waiting for trades'}
                 </span>
-                <small>Where 70% of window traded</small>
+                <small>Where 70% of {sessionProfile.rangeLabel} traded</small>
               </div>
             </article>
 
@@ -733,77 +832,251 @@ export function FootprintTab({
                 <span>Naked POC Magnets</span>
               </div>
               <strong className={`fp-stat-value ${sessionProfile.nakedPocs.length > 0 ? 'amber' : ''}`}>
-                {sessionProfile.nakedPocs.length > 0
-                  ? `${sessionProfile.nakedPocs.length} untested (${formatPriceDollar(sessionProfile.nakedPocs[0].price)})`
-                  : sessionProfile.tradeCount > 0
-                    ? 'All tested · Clean'
-                    : '—'}
+                {sessionProfile.nakedPocs.length === 1
+                  ? `1 untested (${formatPriceDollar(sessionProfile.nakedPocs[0].price)})`
+                  : sessionProfile.nakedPocs.length > 1
+                    ? `${sessionProfile.nakedPocs.length} untested · nearest ${formatPriceDollar(sessionProfile.nakedPocs[0].price)}`
+                    : sessionProfile.tradeCount > 0
+                      ? 'All tested · Clean'
+                      : '—'}
               </strong>
               <div className="fp-stat-foot">
                 <span>
                   {sessionProfile.nakedPocs.length > 0
-                    ? `From ${formatTimeUtc(sessionProfile.nakedPocs[0].candleStart)} UTC candle`
-                    : 'No unvisited prior POCs'}
+                    ? `${sessionProfile.nakedPocs[0].originLabel} · ${formatSignedUsd(sessionProfile.nakedPocs[0].distanceUsd)}${
+                        sessionProfile.nakedPocs[0].distancePct !== null
+                          ? ` (${sessionProfile.nakedPocs[0].distancePct >= 0 ? '+' : ''}${sessionProfile.nakedPocs[0].distancePct.toFixed(1)}%)`
+                          : ''
+                      }`
+                    : sessionProfile.nakedPocMode === 'daily'
+                      ? 'All prior daily POCs visited'
+                      : 'No unvisited prior POCs'}
                 </span>
-                <small>Unvisited prior candle POCs</small>
+                <small>
+                  {sessionProfile.nakedPocs.length > 0
+                    ? offLadderNpocCount === 0
+                      ? `${sessionProfile.nakedPocMode === 'daily' ? 'Daily session nPOCs' : 'Prior bar nPOCs'} · all on ladder`
+                      : `${onLadderNpocCount} on ${sessionProfile.rangeLabel} ladder · ${offLadderNpocCount} outside range`
+                    : sessionProfile.nakedPocMode === 'daily'
+                      ? 'Untested prior daily POCs (12d)'
+                      : 'Unvisited prior candle POCs'}
+                </small>
               </div>
             </article>
           </div>
 
-          {sessionProfile.rows.length === 0 ? (
-            <div className="fp-empty">
-              <strong>Waiting for live OKX trades to build your {timeframeShort} Session Profile</strong>
-              <p>
-                As trades flow across the 6-candle window, volume will stack at each price level to reveal
-                Value Area boundaries (VAH/VAL) and untested Naked POC magnets.
-              </p>
-            </div>
-          ) : (
-            <div className="fp-svp-list" role="region" aria-label="Session volume profile ladder" tabIndex={0}>
-              {sessionProfile.rows.map(row => {
-                const deltaTone =
-                  row.totalBtc === 0 ? 'flat' : row.deltaBtc > 0 ? 'up' : row.deltaBtc < 0 ? 'down' : 'flat'
-                return (
-                  <div
-                    key={row.price}
-                    className={`fp-svp-row ${row.isSessionPoc ? 'is-poc' : ''} ${row.inValueArea ? 'in-va' : ''} ${row.isNakedPoc ? 'is-npoc' : ''}`}
+          {sessionProfile.prevDayLevels && (
+            <section className="fp-prevday-strip" aria-label="Previous day value area reference">
+              <div className="fp-prevday-head">
+                <div className="fp-prevday-title-row">
+                  <span className="eyebrow">
+                    YESTERDAY&apos;S VALUE AREA · {sessionProfile.prevDayLevels.dateLabel}
+                  </span>
+                  <span
+                    className={`fp-verdict-badge tone-${
+                      sessionProfile.prevDayLevels.pricePosition === 'above-pvah'
+                        ? 'teal'
+                        : sessionProfile.prevDayLevels.pricePosition === 'below-pval'
+                          ? 'rose'
+                          : 'blue'
+                    }`}
                   >
-                    <div className="fp-svp-price">
-                      <span className="fp-price-num">{formatPriceDollar(row.price)}</span>
-                      <span className="fp-price-tags">
-                        {row.isSessionPoc && <span className="fp-tag poc">👑 POC</span>}
-                        {row.isVah && <span className="fp-tag va">VAH</span>}
-                        {row.isVal && !row.isVah && <span className="fp-tag va">VAL</span>}
-                        {row.isNakedPoc && <span className="fp-tag npoc">🧲 nPOC</span>}
-                        {row.isLatestRow && <span className="fp-tag close">NOW</span>}
-                      </span>
-                    </div>
+                    {sessionProfile.prevDayLevels.pricePosition === 'above-pvah'
+                      ? 'Above pVAH'
+                      : sessionProfile.prevDayLevels.pricePosition === 'below-pval'
+                        ? 'Below pVAL'
+                        : sessionProfile.prevDayLevels.pricePosition === 'inside-pva'
+                          ? 'Inside Prev VA'
+                          : 'Prior Session'}
+                  </span>
+                </div>
+                {svpRange !== 'prevDay' && (
+                  <button
+                    type="button"
+                    className="fp-prevday-jump"
+                    onClick={() => setSvpRange('prevDay')}
+                  >
+                    Inspect Prev Day →
+                  </button>
+                )}
+              </div>
 
-                    <div className="fp-svp-bar-wrap" aria-hidden="true">
-                      <div className="fp-svp-bar" style={{ width: `${row.totalWidthPct}%` }}>
-                        <span className="fp-svp-sell" style={{ width: `${row.sellSharePct}%` }} />
-                        <span className="fp-svp-buy" style={{ width: `${row.buySharePct}%` }} />
+              <div className="fp-prevday-levels">
+                <div className="fp-prevday-level">
+                  <small>pVAL (Prev Low)</small>
+                  <strong>{formatPriceDollar(sessionProfile.prevDayLevels.valPrice)}</strong>
+                </div>
+                <div className="fp-prevday-level is-poc">
+                  <small>pPOC (Prev Fair Value)</small>
+                  <strong>{formatPriceDollar(sessionProfile.prevDayLevels.pocPrice)}</strong>
+                </div>
+                <div className="fp-prevday-level">
+                  <small>pVAH (Prev High)</small>
+                  <strong>{formatPriceDollar(sessionProfile.prevDayLevels.vahPrice)}</strong>
+                </div>
+              </div>
+
+              <p className="fp-prevday-note">{sessionProfile.prevDayLevels.contextNote}</p>
+            </section>
+          )}
+
+          {sessionProfile.nakedPocs.length > 0 && (
+            <section className="fp-npoc-strip" aria-label="Untested Naked POC magnets">
+              <div className="fp-npoc-head">
+                <div className="fp-prevday-title-row">
+                  <span className="eyebrow">
+                    UNTESTED NAKED POC MAGNETS ·{' '}
+                    {sessionProfile.nakedPocMode === 'daily'
+                      ? 'PRIOR DAILY SESSIONS'
+                      : `${timeframeShort.toUpperCase()} BARS`}
+                  </span>
+                  <span className="fp-verdict-badge tone-amber">
+                    {sessionProfile.nakedPocs.length} active
+                  </span>
+                </div>
+                {offLadderNpocCount > 0 &&
+                  sessionProfile.nakedPocMode === 'daily' &&
+                  svpRange !== '7d' && (
+                    <button
+                      type="button"
+                      className="fp-prevday-jump"
+                      onClick={() => setSvpRange('7d')}
+                    >
+                      Widen to 7D →
+                    </button>
+                  )}
+              </div>
+
+              <div className="fp-npoc-list">
+                {sessionProfile.nakedPocs.slice(0, 6).map(magnet => {
+                  const dirClass =
+                    magnet.directionFromClose === 'above'
+                      ? 'above'
+                      : magnet.directionFromClose === 'below'
+                        ? 'below'
+                        : ''
+                  const arrow =
+                    magnet.directionFromClose === 'above'
+                      ? '▲'
+                      : magnet.directionFromClose === 'below'
+                        ? '▼'
+                        : '•'
+                  const pctText =
+                    magnet.distancePct !== null
+                      ? ` (${magnet.distancePct >= 0 ? '+' : ''}${magnet.distancePct.toFixed(1)}%)`
+                      : ''
+                  return (
+                    <div
+                      key={`${magnet.kind}-${magnet.candleStart}-${magnet.price}`}
+                      className="fp-npoc-item"
+                    >
+                      <div className="fp-npoc-price-row">
+                        <strong>{formatPriceDollar(magnet.price)}</strong>
+                        <span className={`fp-npoc-status ${magnet.onLadder ? 'is-on' : 'is-off'}`}>
+                          {magnet.onLadder
+                            ? 'On ladder'
+                            : magnet.directionFromClose === 'above'
+                              ? 'Above range'
+                              : 'Below range'}
+                        </span>
+                      </div>
+                      <div className="fp-npoc-meta">
+                        <span>{magnet.originLabel}</span>
+                        <span className={`fp-npoc-dist ${dirClass}`}>
+                          {arrow} {formatSignedUsd(magnet.distanceUsd)}
+                          {pctText}
+                        </span>
                       </div>
                     </div>
-
-                    <div className="fp-svp-stats">
-                      <strong>{row.totalBtc > 0 ? `${row.totalBtc.toFixed(2)} ₿` : '·'}</strong>
-                      <small className={deltaTone}>
-                        {row.totalBtc > 0 ? `${formatSignedBtc(row.deltaBtc)} ₿` : '—'}
-                      </small>
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
+                  )
+                })}
+              </div>
+              {sessionProfile.nakedPocs.length > 6 && (
+                <span className="fp-meta-chip">
+                  +{sessionProfile.nakedPocs.length - 6} older untested daily nPOCs
+                </span>
+              )}
+            </section>
           )}
+
+          <div id="fp-svp-ladder">
+            {sessionProfile.rows.length === 0 ? (
+              <div className="fp-empty">
+                <strong>Waiting for OKX data to build your {sessionProfile.rangeLabel} Session Profile</strong>
+                <p>
+                  Candles and live trades across the {sessionProfile.rangeLabel} window will stack at each price level
+                  to reveal Value Area boundaries (VAH/VAL) and key support/resistance zones.
+                </p>
+              </div>
+            ) : (
+              <div className="fp-svp-list" role="region" aria-label="Session volume profile ladder" tabIndex={0}>
+                {sessionProfile.rows.map(row => {
+                  const deltaTone =
+                    row.totalBtc === 0 ? 'flat' : row.deltaBtc > 0 ? 'up' : row.deltaBtc < 0 ? 'down' : 'flat'
+                  return (
+                    <div
+                      key={row.price}
+                      className={`fp-svp-row ${row.isSessionPoc ? 'is-poc' : ''} ${row.inValueArea ? 'in-va' : ''} ${row.isNakedPoc ? 'is-npoc' : ''}`}
+                    >
+                      <div className="fp-svp-price">
+                        <span className="fp-price-num">{formatPriceDollar(row.price)}</span>
+                        <span className="fp-price-tags">
+                          {row.isSessionPoc && <span className="fp-tag poc">👑 POC</span>}
+                          {row.isVah && <span className="fp-tag va">VAH</span>}
+                          {row.isVal && !row.isVah && <span className="fp-tag va">VAL</span>}
+                          {row.isPrevDayVah && (
+                            <span className="fp-tag prev-va" title="Previous Day Value Area High">
+                              pVAH
+                            </span>
+                          )}
+                          {row.isPrevDayPoc && (
+                            <span className="fp-tag prev-poc" title="Previous Day Point of Control">
+                              pPOC
+                            </span>
+                          )}
+                          {row.isPrevDayVal && !row.isPrevDayVah && (
+                            <span className="fp-tag prev-va" title="Previous Day Value Area Low">
+                              pVAL
+                            </span>
+                          )}
+                          {row.isNakedPoc && (
+                            <span className="fp-tag npoc" title={row.nakedPocLabels.join(' · ')}>
+                              {row.nakedPocCount > 1 ? `🧲 ${row.nakedPocCount} nPOCs` : '🧲 nPOC'}
+                            </span>
+                          )}
+                          {row.isLatestRow && <span className="fp-tag close">NOW</span>}
+                        </span>
+                      </div>
+
+                      <div className="fp-svp-bar-wrap" aria-hidden="true">
+                        <div className="fp-svp-bar" style={{ width: `${row.totalWidthPct}%` }}>
+                          <span className="fp-svp-sell" style={{ width: `${row.sellSharePct}%` }} />
+                          <span className="fp-svp-buy" style={{ width: `${row.buySharePct}%` }} />
+                        </div>
+                      </div>
+
+                      <div className="fp-svp-stats">
+                        <strong>{row.totalBtc > 0 ? `${formatBtcAmount(row.totalBtc)} ₿` : '·'}</strong>
+                        <small className={deltaTone}>
+                          {row.totalBtc > 0 ? `${formatSignedBtc(row.deltaBtc)} ₿` : '—'}
+                        </small>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
 
           <div className="fp-takeaway">
             <p className="fp-oneliner">{sessionProfile.oneLiner}</p>
             <div className="fp-legend" aria-label="Session profile legend">
-              <span className="fp-legend-chip">👑 POC = 6-bar peak volume</span>
+              <span className="fp-legend-chip">👑 POC = {sessionProfile.rangeLabel} peak volume</span>
               <span className="fp-legend-chip">VAH/VAL = 70% value bounds</span>
-              <span className="fp-legend-chip">🧲 nPOC = Untested prior POC</span>
+              <span className="fp-legend-chip">pVA = Yesterday&apos;s levels</span>
+              <span className="fp-legend-chip">
+                🧲 nPOC = {sessionProfile.nakedPocMode === 'daily' ? 'Untested daily POC' : 'Untested bar POC'}
+              </span>
             </div>
           </div>
         </section>

@@ -579,4 +579,145 @@ test('Footprint tab displays Section 1 battleground, POC, Value Zone, step group
   }
 })
 
+test('4h timeframe, multi-range SVP profiles, and Previous Day reference levels work across viewports', async ({ page }) => {
+  const now = Date.now()
+  const dayMs = 86_400_000
+  const min15 = 900_000
+  const hour1 = 3_600_000
+  const hour4 = 14_400_000
+  const todayUtcStart = Math.floor(now / dayMs) * dayMs
+  const current15mStart = Math.floor(now / min15) * min15
+  const current1hStart = Math.floor(now / hour1) * hour1
+  const current4hStart = Math.floor(now / hour4) * hour4
+
+  const makeRow = (ts: number, o: number, h: number, l: number, c: number, v: number) => [
+    String(ts),
+    String(o),
+    String(h),
+    String(l),
+    String(c),
+    String(v * 100),
+    String(v),
+  ]
+
+  const candles15m = [
+    makeRow(current15mStart, 63150, 63900, 63050, 63850, 40),
+    ...(todayUtcStart < current15mStart
+      ? [makeRow(todayUtcStart, 63600, 63880, 63550, 63820, 90)]
+      : []),
+    makeRow(todayUtcStart - min15, 61900, 62150, 61850, 62100, 140),
+    makeRow(todayUtcStart - 4 * hour1, 62150, 62300, 62100, 62220, 120),
+  ]
+  const candles1h = [
+    makeRow(current1hStart, 63600, 63900, 63550, 63850, 80),
+    makeRow(todayUtcStart - 6 * hour1, 61950, 62250, 61900, 62150, 220),
+    makeRow(todayUtcStart - 36 * hour1, 63020, 63200, 63000, 63150, 300),
+    makeRow(todayUtcStart - 108 * hour1, 59900, 60300, 59800, 60100, 700),
+  ]
+  const candles4h = [
+    makeRow(current4hStart - 2 * hour4, 62800, 63200, 62700, 63100, 180),
+    makeRow(current4hStart - hour4, 63100, 63600, 63050, 63550, 210),
+  ]
+
+  await page.route('https://www.okx.com/api/v5/market/candles**', async route => {
+    const url = new URL(route.request().url())
+    const bar = url.searchParams.get('bar')
+    const data =
+      bar === '15m' ? candles15m : bar === '1H' ? candles1h : bar === '4H' ? candles4h : []
+    await route.fulfill({ json: { code: '0', msg: '', data } })
+  })
+
+  await page.routeWebSocket('wss://ws.okx.com/ws/v5/public', ws => {
+    ws.onMessage(() => {
+      ws.send(JSON.stringify({ event: 'subscribe' }))
+      ws.send(
+        JSON.stringify({
+          arg: { channel: 'trades' },
+          data: [
+            {
+              instId: 'BTC-USDT-SWAP',
+              tradeId: 'svp-live-1',
+              side: 'buy',
+              sz: '50',
+              ts: String(Date.now() - 500),
+              px: '63850',
+            },
+          ],
+        }),
+      )
+    })
+  })
+
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await page.goto('/')
+  await expect(page.getByText('$63,850.00')).toBeVisible({ timeout: 10000 })
+
+  // Switch top timeframe to 4h
+  await page.getByRole('button', { name: '4h', exact: true }).click()
+  await expect(page.getByRole('tab', { name: /Flow Metrics/ })).toBeVisible()
+  await page.getByRole('tab', { name: /Flow Metrics/ }).click()
+  await expect(page.getByText('4 hours window', { exact: false })).toBeVisible()
+
+  // Navigate to Footprint -> SVP (defaults to Rolling 24h)
+  await page.getByRole('button', { name: 'Footprint', exact: true }).click()
+  await page.getByRole('tab', { name: /Session Profile \(SVP\)/ }).click()
+
+  const svpSection = page.getByRole('region', { name: 'Session volume profile', exact: true })
+  await expect(svpSection.getByRole('button', { name: '24h', exact: true })).toHaveAttribute('aria-pressed', 'true')
+
+  const vaCardValue = svpSection.locator('.fp-stat-card').nth(1).locator('.fp-stat-value')
+  const pocCardValue = svpSection.locator('.fp-stat-card').nth(0).locator('.fp-stat-value')
+  await expect(pocCardValue).not.toHaveText('—')
+
+  // Previous Day Reference Strip visible with pVAL, pPOC, pVAH
+  const prevDayStrip = svpSection.getByRole('region', { name: 'Previous day value area reference' })
+  await expect(prevDayStrip).toBeVisible()
+  await expect(prevDayStrip.getByText('pVAL (Prev Low)')).toBeVisible()
+  await expect(prevDayStrip.getByText('pPOC (Prev Fair Value)')).toBeVisible()
+  await expect(prevDayStrip.getByText('pVAH (Prev High)')).toBeVisible()
+  await expect(prevDayStrip.getByText('Above pVAH')).toBeVisible()
+
+  // Untested Daily nPOC Magnets strip lists both active daily nPOCs and reconciles on-ladder vs off-range
+  const npocStrip = svpSection.getByRole('region', { name: 'Untested Naked POC magnets' })
+  await expect(npocStrip).toBeVisible()
+  await expect(npocStrip.getByText('2 active')).toBeVisible()
+  await expect(npocStrip.getByText('On ladder')).toHaveCount(1)
+  await expect(npocStrip.getByText('Below range')).toHaveCount(1)
+  await expect(svpSection.getByText('1 on 24h ladder · 1 outside range')).toBeVisible()
+
+  const va24h = await vaCardValue.innerText()
+
+  // Widen to 7D brings both Daily nPOCs onto the ladder
+  await npocStrip.getByRole('button', { name: /Widen to 7D/ }).click()
+  await expect(svpSection.getByRole('button', { name: '7D', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await expect(npocStrip.getByText('On ladder')).toHaveCount(2)
+  await expect(svpSection.getByText('Daily session nPOCs · all on ladder')).toBeVisible()
+  const va7d = await vaCardValue.innerText()
+
+  await svpSection.getByRole('button', { name: 'Today', exact: true }).click()
+  await expect(svpSection.getByRole('button', { name: 'Today', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  const vaToday = await vaCardValue.innerText()
+
+  await prevDayStrip.getByRole('button', { name: /Inspect Prev Day/ }).click()
+  await expect(svpSection.getByRole('button', { name: 'Prev Day', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  const vaPrevDay = await vaCardValue.innerText()
+
+  await svpSection.getByRole('button', { name: 'Chart TF', exact: true }).click()
+  await expect(svpSection.getByRole('button', { name: 'Chart TF', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await expect(svpSection.getByText('SECTION 3 · SESSION VOLUME PROFILE (4H CHART)')).toBeVisible()
+
+  expect(vaToday).not.toBe(vaPrevDay)
+  expect(va7d).not.toBe(vaToday)
+  expect(va24h).not.toBe(va7d)
+
+  await svpSection.getByRole('button', { name: '24h', exact: true }).click()
+  await expect(npocStrip).toBeVisible()
+
+  for (const width of [320, 390, 768, 1280]) {
+    await page.setViewportSize({ width, height: 900 })
+    await expect(svpSection).toBeVisible()
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+  }
+})
+
 

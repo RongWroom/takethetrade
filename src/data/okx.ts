@@ -1,6 +1,6 @@
 import type { Trade } from '../domain/tradeEngine'
 
-export type TimeframeId = '1m' | '5m' | '15m' | '30m' | '1h'
+export type TimeframeId = '1m' | '5m' | '15m' | '30m' | '1h' | '4h'
 
 export type TimeframeOption = {
   id: TimeframeId
@@ -8,7 +8,7 @@ export type TimeframeOption = {
   shortLabel: string
   bucketMs: number
   candleBar: string
-  rubikPeriod: '5m' | '15m' | '30m' | '1H' | null
+  rubikPeriod: '5m' | '15m' | '30m' | '1H' | '4H' | null
 }
 
 export const TIMEFRAME_OPTIONS: readonly TimeframeOption[] = [
@@ -17,6 +17,7 @@ export const TIMEFRAME_OPTIONS: readonly TimeframeOption[] = [
   { id: '15m', label: '15 minutes', shortLabel: '15m', bucketMs: 900_000, candleBar: '15m', rubikPeriod: '15m' },
   { id: '30m', label: '30 minutes', shortLabel: '30m', bucketMs: 1_800_000, candleBar: '30m', rubikPeriod: '30m' },
   { id: '1h', label: '1 hour', shortLabel: '1h', bucketMs: 3_600_000, candleBar: '1H', rubikPeriod: '1H' },
+  { id: '4h', label: '4 hours', shortLabel: '4h', bucketMs: 14_400_000, candleBar: '4H', rubikPeriod: '4H' },
 ]
 
 export function getTimeframeOption(id: TimeframeId): TimeframeOption {
