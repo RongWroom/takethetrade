@@ -701,7 +701,7 @@ test('4h timeframe, multi-range SVP profiles, and Previous Day reference levels 
   await npocStrip.getByRole('button', { name: /Widen to 7D/ }).click()
   await expect(svpSection.getByRole('button', { name: '7D', exact: true })).toHaveAttribute('aria-pressed', 'true')
   await expect(npocStrip.getByText('On ladder')).toHaveCount(2)
-  await expect(svpSection.getByText('Daily session nPOCs · all on ladder')).toBeVisible()
+  await expect(svpSection.getByText('Calendar NPOCs · all on ladder')).toBeVisible()
   const va7d = await vaCardValue.innerText()
 
   await svpSection.getByRole('button', { name: 'Today', exact: true }).click()

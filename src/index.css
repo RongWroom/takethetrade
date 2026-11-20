@@ -3943,3 +3943,30 @@ details.fp-takeaway { display: block; min-inline-size: 0; }
 details.fp-takeaway > .fp-export-btn { margin-block: 10px; }
 .mt-jc-inputs select { min-height: 36px; color: inherit; background: #0d161f; border: 1px solid #2c3c4c; border-radius: 8px; padding-inline: 10px; }
 .fp-flow-chart button small { min-height: 1.25em; }
+
+.levels-panel { padding: 16px; container-type: inline-size; }
+.levels-panel-profile { padding: 12px 0; }
+.levels-heading, .levels-controls { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.levels-heading p { margin: 4px 0 0; }
+.levels-controls { margin-block: 12px; }
+.levels-controls [role='group'] { display: flex; flex-wrap: wrap; gap: 6px; }
+.levels-controls button[aria-pressed='true'] { border-color: currentColor; }
+.level-daily { --level-color: #83c4ff; }
+.level-weekly { --level-color: #f9d66d; }
+.level-monthly { --level-color: #d4a9ff; }
+.level-vwap { --level-color: #8fe4cb; }
+.level-tag { color: var(--level-color, inherit); font-weight: 600; }
+.fp-price-tags .level-tag { font-size: 10px; }
+.fp-npoc-item .fp-npoc-meta > span:first-child { color: var(--level-color, inherit); }
+.level-form:not([hidden]) { display: flex; align-items: end; flex-wrap: wrap; gap: 10px; margin-block: 14px; }
+.level-form label { display: grid; gap: 4px; flex: 1 1 130px; min-width: 0; }
+.level-form input, .level-form select { width: 100%; min-height: 38px; background: #101b26; color: #eef5fb; border: 1px solid #46586b; border-radius: 6px; padding-inline: 8px; }
+.level-map { list-style: none; padding: 0; margin-block: 14px; max-height: 440px; overflow: auto; }
+.level-map li { display: grid; grid-template-columns: minmax(80px, 116px) minmax(0, 1fr); border-top: 1px solid #2b3a48; gap: 10px; padding: 8px; }
+.level-map li.level-row-current { border-top: 2px solid #8fe4cb; background: #16312e; }
+.level-map-price { display: grid; align-content: start; gap: 2px; font-variant-numeric: tabular-nums; }
+.level-map-price small { color: #adbccc; }
+.level-map-details { min-width: 0; overflow-wrap: anywhere; }
+.level-map-details details + details { margin-top: 6px; }
+.level-map-details p, .levels-help p { margin: 5px 0 8px; color: #adbccc; }
+.level-map-details summary, .levels-help summary { cursor: pointer; }

@@ -5,6 +5,8 @@ import { useLiveMarketData } from './features/LiveOverview'
 import { LIQUIDATION_LARGE_USD, SIGNAL_RULES } from './domain/signalConfirmation'
 import { describeConfirmation } from './features/confirmationLabels'
 import { FolderShell, FootprintTab, type FolderTabDef, type FolderTone } from './features/FootprintTab'
+import { ReferenceLevels } from './features/ReferenceLevels'
+import { useReferenceLevels } from './features/useReferenceLevels'
 import { MarketStory } from './features/MarketStory'
 import { MyTradePanel } from './features/MyTradePanel'
 import { useConfirmationPreference } from './features/useConfirmationPreference'
@@ -73,7 +75,7 @@ function toFolderTone(tone: string | undefined): FolderTone {
 
 function App() {
   const [activeTab, setActiveTab] = useState<'overview' | 'footprint'>('overview')
-  const [overviewFolder, setOverviewFolder] = useState<'story' | 'metrics' | 'pulse'>('story')
+  const [overviewFolder, setOverviewFolder] = useState<'story' | 'metrics' | 'pulse' | 'levels'>('story')
   const [panel, setPanel] = useState<Panel>(null)
   const [focus, setFocus] = useState(false)
   const [timeframe, setTimeframe] = useState<TimeframeId>('1m')
@@ -82,6 +84,7 @@ function App() {
   const dialog = useRef<HTMLDialogElement>(null)
   const { mode: confirmationMode, setMode: setConfirmationMode } = useConfirmationPreference()
   const live = useLiveMarketData(timeframe, confirmationMode)
+  const referenceLevels = useReferenceLevels(live.svpHistory, live.snapshot.price, live.snapshot.vwap)
   const [tradePanel, setTradePanel] = useState<'plan' | 'journal' | null>(null)
   const trade = useTradeCheck(live.snapshot)
   const journal = useTradeJournal()
@@ -138,7 +141,7 @@ function App() {
           ? 'How it works'
           : 'Settings'
 
-  const overviewTabs: readonly FolderTabDef<'story' | 'metrics' | 'pulse'>[] = [
+  const overviewTabs: readonly FolderTabDef<'story' | 'metrics' | 'pulse' | 'levels'>[] = [
     {
       id: 'story',
       tabId: 'ov-tab-story',
@@ -146,6 +149,14 @@ function App() {
       label: 'Story Timeline',
       badge: live.story.buckets[live.story.buckets.length - 1]?.phaseLabel ?? 'Waiting',
       tone: toFolderTone(live.story.tone),
+    },
+    {
+      id: 'levels',
+      tabId: 'ov-tab-levels',
+      panelId: 'ov-panel-levels',
+      label: 'Levels',
+      badge: '',
+      tone: 'blue',
     },
     {
       id: 'metrics',
@@ -252,6 +263,7 @@ function App() {
             trades={live.trades}
             backfill={live.backfill}
             svpHistory={live.svpHistory}
+            referenceLevels={referenceLevels}
             timeframeShort={timeframe}
             timeframeLabel={live.timeframeLabel}
             bucketMs={getTimeframeOption(timeframe).bucketMs}
@@ -282,6 +294,10 @@ function App() {
                   focus={focus}
                   onOpenGuide={() => setPanel('guide')}
                 />
+              </div>
+              <div role="tabpanel" id="ov-panel-levels" aria-labelledby="ov-tab-levels"
+                className="folder-panel" hidden={overviewFolder !== 'levels'}>
+                {overviewFolder === 'levels' && <ReferenceLevels model={referenceLevels} />}
               </div>
               <div
                 role="tabpanel"

@@ -1,3 +1,6 @@
+import { LevelTag, ReferenceLevels } from './ReferenceLevels'
+import type { ReferenceLevels as LevelsModel } from './useReferenceLevels'
+import type { MarketLevel } from '../domain/levels'
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import {
   evaluateFootprint,
@@ -144,6 +147,7 @@ export function FootprintTab({
   trades,
   backfill,
   svpHistory,
+  referenceLevels,
   timeframeShort,
   timeframeLabel,
   bucketMs,
@@ -156,6 +160,7 @@ export function FootprintTab({
     takerBuckets: readonly OkxTakerVolumeBucket[]
   }
   svpHistory?: SvpHistoryData
+  referenceLevels: LevelsModel
   timeframeShort: string
   timeframeLabel: string
   bucketMs: number
@@ -210,7 +215,21 @@ export function FootprintTab({
     bucketMs,
     backfill,
     svpHistory,
+    hasCalendarHistory: referenceLevels.historyState === 'ready',
+    calendarMagnets: referenceLevels.levels.flatMap(level =>
+      level.kind === 'npoc' && level.period && level.date !== undefined
+        ? [{ price: level.price, period: level.period, date: level.date, label: level.label, volumeBtc: level.volumeBtc ?? 0 }]
+        : [],
+    ),
   })
+  const profileLevels = new Map<number, MarketLevel[]>()
+  for (const level of referenceLevels.levels) {
+    if (level.revisited || level.kind === 'profile') continue
+    const row = Math.floor(level.price / sessionProfile.stepUsd) * sessionProfile.stepUsd
+    const group = profileLevels.get(row)
+    if (group) group.push(level)
+    else profileLevels.set(row, [level])
+  }
   const onLadderNpocCount = sessionProfile.nakedPocs.filter(n => n.onLadder).length
   const offLadderNpocCount = sessionProfile.nakedPocs.length - onLadderNpocCount
   const exchangeBars = backfill
@@ -846,7 +865,7 @@ export function FootprintTab({
                   : sessionProfile.nakedPocs.length > 1
                     ? `${sessionProfile.nakedPocs.length} untested · nearest ${formatPriceDollar(sessionProfile.nakedPocs[0].price)}`
                     : sessionProfile.tradeCount > 0
-                      ? 'All tested · Clean'
+                      ? 'None in available history'
                       : '—'}
               </strong>
               <div className="fp-stat-foot">
@@ -858,16 +877,16 @@ export function FootprintTab({
                           : ''
                       }`
                     : sessionProfile.nakedPocMode === 'daily'
-                      ? 'All prior daily POCs visited'
+                      ? 'No calendar NPOCs found'
                       : 'No unvisited prior POCs'}
                 </span>
                 <small>
                   {sessionProfile.nakedPocs.length > 0
                     ? offLadderNpocCount === 0
-                      ? `${sessionProfile.nakedPocMode === 'daily' ? 'Daily session nPOCs' : 'Prior bar nPOCs'} · all on ladder`
+                      ? `${sessionProfile.nakedPocMode === 'daily' ? 'Calendar NPOCs' : 'Prior bar NPOCs'} · all on ladder`
                       : `${onLadderNpocCount} on ${sessionProfile.rangeLabel} ladder · ${offLadderNpocCount} outside range`
                     : sessionProfile.nakedPocMode === 'daily'
-                      ? 'Untested prior daily POCs (12d)'
+                      ? 'Daily, weekly and monthly'
                       : 'Unvisited prior candle POCs'}
                 </small>
               </div>
@@ -934,9 +953,9 @@ export function FootprintTab({
               <div className="fp-npoc-head">
                 <div className="fp-prevday-title-row">
                   <span className="eyebrow">
-                    UNTESTED NAKED POC MAGNETS ·{' '}
+                    UNTESTED NPOC MAGNETS ·{' '}
                     {sessionProfile.nakedPocMode === 'daily'
-                      ? 'PRIOR DAILY SESSIONS'
+                      ? 'DAILY / WEEKLY / MONTHLY'
                       : `${timeframeShort.toUpperCase()} BARS`}
                   </span>
                   <span className="fp-verdict-badge tone-amber">
@@ -977,7 +996,7 @@ export function FootprintTab({
                   return (
                     <div
                       key={`${magnet.kind}-${magnet.candleStart}-${magnet.price}`}
-                      className="fp-npoc-item"
+                      className={`fp-npoc-item level-${magnet.kind}`}
                     >
                       <div className="fp-npoc-price-row">
                         <strong>{formatPriceDollar(magnet.price)}</strong>
@@ -1002,12 +1021,13 @@ export function FootprintTab({
               </div>
               {sessionProfile.nakedPocs.length > 6 && (
                 <span className="fp-meta-chip">
-                  +{sessionProfile.nakedPocs.length - 6} older untested daily nPOCs
+                  +{sessionProfile.nakedPocs.length - 6} more untested NPOCs
                 </span>
               )}
             </section>
           )}
 
+          <ReferenceLevels model={referenceLevels} profile />
           <div id="fp-svp-ladder">
             {sessionProfile.rows.length === 0 ? (
               <div className="fp-empty">
@@ -1048,11 +1068,12 @@ export function FootprintTab({
                               pVAL
                             </span>
                           )}
-                          {row.isNakedPoc && (
+                          {row.isNakedPoc && !(profileLevels.get(row.price) ?? []).some(level => level.kind === 'npoc') && (
                             <span className="fp-tag npoc" title={row.nakedPocLabels.join(' · ')}>
                               {row.nakedPocCount > 1 ? `🧲 ${row.nakedPocCount} nPOCs` : '🧲 nPOC'}
                             </span>
                           )}
+                          {(profileLevels.get(row.price) ?? []).map(level => <LevelTag key={level.id} level={level} />)}
                           {row.isLatestRow && <span className="fp-tag close">NOW</span>}
                         </span>
                       </div>
@@ -1084,7 +1105,7 @@ export function FootprintTab({
               <span className="fp-legend-chip">VAH/VAL = 70% value bounds</span>
               <span className="fp-legend-chip">pVA = Yesterday&apos;s levels</span>
               <span className="fp-legend-chip">
-                🧲 nPOC = {sessionProfile.nakedPocMode === 'daily' ? 'Untested daily POC' : 'Untested bar POC'}
+                🧲 nPOC = {sessionProfile.nakedPocMode === 'daily' ? 'Untested calendar POC' : 'Untested bar POC'}
               </span>
             </div>
           </div>

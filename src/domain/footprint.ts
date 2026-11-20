@@ -994,7 +994,7 @@ export type NakedPocMagnet = {
   price: number
   rowPrice: number
   onLadder: boolean
-  kind: 'daily' | 'candle'
+  kind: 'daily' | 'weekly' | 'monthly' | 'candle'
   originLabel: string
   volumeBtc: number
   directionFromClose: 'above' | 'below' | 'at'
@@ -1205,7 +1205,7 @@ type UtcDayProfileResult = {
   dateLabel: string
 }
 
-function computeUtcDayProfile(params: {
+export function computeUtcDayProfile(params: {
   dayCandles: readonly OkxCandlePoint[]
   takerMap: ReadonlyMap<number, OkxTakerVolumeBucket>
   dayStart: number
@@ -1461,6 +1461,8 @@ export function evaluateSessionProfile(params: {
     candles?: readonly OkxCandlePoint[]
     takerBuckets?: readonly OkxTakerVolumeBucket[]
   }
+  hasCalendarHistory?: boolean
+  calendarMagnets?: readonly { price: number; period: 'daily' | 'weekly' | 'monthly'; date: number; label: string; volumeBtc: number }[]
   svpHistory?: {
     candles15m?: readonly OkxCandlePoint[]
     taker15m?: readonly OkxTakerVolumeBucket[]
@@ -1478,6 +1480,8 @@ export function evaluateSessionProfile(params: {
     bucketMs: bucketMsParam,
     backfill,
     svpHistory,
+    calendarMagnets,
+    hasCalendarHistory = false,
   } = params
   const defaultStep = stepOption === 'auto' ? 10 : stepOption
   const effectiveNow =
@@ -1515,7 +1519,7 @@ export function evaluateSessionProfile(params: {
     (svpHistory?.candles1h?.some(c => c.time < todayUtcStart) ?? false) ||
     (svpHistory?.candles15m?.some(c => c.time < todayUtcStart) ?? false)
   const nakedPocMode: 'daily' | 'candle' =
-    rangeId !== 'chart' && hasPriorDailyHistory ? 'daily' : 'candle'
+    calendarMagnets !== undefined || (rangeId !== 'chart' && hasPriorDailyHistory) ? 'daily' : 'candle'
 
   let rangeStart = 0
   let rangeEnd = effectiveNow + 1
@@ -1813,7 +1817,21 @@ export function evaluateSessionProfile(params: {
   const ladderMaxRowPrice = maxRowIdx * effectiveStep
 
   let nakedPocs: NakedPocMagnet[] = []
-  if (nakedPocMode === 'daily') {
+  if (calendarMagnets?.length) {
+    nakedPocs = calendarMagnets.map<NakedPocMagnet>((level, candleIndex) => {
+      const rowPrice = Math.floor(level.price / effectiveStep) * effectiveStep
+      return {
+        candleIndex, candleStart: level.date, price: level.price, rowPrice,
+        onLadder: rowPrice >= ladderMinRowPrice && rowPrice <= ladderMaxRowPrice,
+        kind: level.period,
+        originLabel: `${level.label} · ${new Date(level.date).toISOString().slice(0, 10)}`,
+        volumeBtc: level.volumeBtc,
+        directionFromClose: level.price > latestPrice ? 'above' : level.price < latestPrice ? 'below' : 'at',
+        distanceUsd: Math.round(level.price - latestPrice),
+        distancePct: latestPrice > 0 ? (level.price - latestPrice) / latestPrice * 100 : null,
+      }
+    }).sort((a, b) => Math.abs(a.price - latestPrice) - Math.abs(b.price - latestPrice))
+  } else if (nakedPocMode === 'daily' && !hasCalendarHistory) {
     nakedPocs = evaluateDailyNakedPocs({
       candles15m: svpHistory?.candles15m,
       taker15m: svpHistory?.taker15m,
@@ -1826,7 +1844,7 @@ export function evaluateSessionProfile(params: {
       ladderMinRowPrice,
       ladderMaxRowPrice,
     })
-  } else {
+  } else if (nakedPocMode === 'candle') {
     // Candle nPOC detection (used in Chart TF mode or before daily REST history loads)
     const nakedByPrice = new Map<number, NakedPocMagnet>()
     for (let i = 0; i < candles.length - 1; i++) {
@@ -1927,7 +1945,7 @@ export function evaluateSessionProfile(params: {
   const valueStatus: SessionProfileEvaluation['valueStatus'] =
     latestRowPrice > grid.vahPrice ? 'above' : latestRowPrice < grid.valPrice ? 'below' : 'inside'
 
-  const magnetLabel = nakedPocMode === 'daily' ? 'Daily nPOC' : 'nPOC'
+  const magnetLabel = 'NPOC'
   const magnetNote = nakedPocs[0]
     ? `, with an untested ${formatPriceInt(nakedPocs[0].price)} ${magnetLabel} magnet`
     : ''
