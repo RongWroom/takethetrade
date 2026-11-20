@@ -134,9 +134,9 @@ export function evaluateMarketPulse(input: PulseInput): PulseEvaluation {
   if (priceFlat && cvdChangeSats > 0n && deltaSats > 0n) {
     return {
       ruleId: 'buying-absorption',
-      observation: 'Hidden sell wall (Absorption)',
-      headline: 'Buyers are trying to push price up, but big sellers are soaking it all up.',
-      copy: 'This means market buyers are buying aggressively, yet price is barely moving. Large passive sellers are sitting with limit orders and absorbing the buying pressure.',
+      observation: 'Possible absorption',
+      headline: 'Net buying with little change in price.',
+      copy: 'Net buying and little price change can indicate that resting sell orders are absorbing buy orders.',
       evidence: evidenceSummary,
     }
   }
@@ -161,8 +161,8 @@ export function evaluateMarketPulse(input: PulseInput): PulseEvaluation {
   return {
     ruleId: 'neutral-flow',
     observation: 'Balanced market',
-    headline: 'Buyers and sellers are in a tug-of-war with no clear winner right now.',
-    copy: 'This means neither buyers nor sellers have taken decisive control in this session window — order flow is mixed and balanced.',
+    headline: 'No price and flow pattern flagged.',
+    copy: 'The readings did not match any of the Market Pulse conditions for this window.',
     evidence: evidenceSummary,
   }
 }

@@ -27,7 +27,10 @@ export type FootprintRow = {
   imbalance: 'buy' | 'sell' | null
 }
 
+type FootprintSource = 'trade-sample' | 'exchange-totals' | 'candle-estimate' | 'missing'
+
 export type FootprintCandle = {
+  source?: FootprintSource
   index: number
   start: number
   end: number
@@ -236,13 +239,13 @@ function buildCandleVerdict(params: {
 
   if (deltaPct >= 15 || (deltaBtc > 0 && buyImbalanceCount > sellImbalanceCount && close >= pocPrice)) {
     const headline =
-      close >= pocPrice ? 'Buyers won the fight above POC' : 'Buyers pushing harder on the ask'
+      close >= pocPrice ? 'Net buying with price at or above POC' : 'More buyer-initiated volume'
     const imbNote =
       buyImbalanceCount > 0
         ? ` with ${buyImbalanceCount} strong buy imbalance${buyImbalanceCount === 1 ? '' : 's'}`
         : ''
     return {
-      badge: { label: 'Buyers in control', tone: 'teal' },
+      badge: { label: 'Net buying', tone: 'teal' },
       headline,
       oneLiner: `Market buyers led by ${formatSignedBtc(deltaBtc)} ₿${imbNote} around the ${pocText} POC.`,
     }
@@ -250,13 +253,13 @@ function buildCandleVerdict(params: {
 
   if (deltaPct <= -15 || (deltaBtc < 0 && sellImbalanceCount > buyImbalanceCount && close <= pocPrice)) {
     const headline =
-      close <= pocPrice ? 'Sellers won the fight below POC' : 'Sellers pressing harder on the bid'
+      close <= pocPrice ? 'Net selling with price at or below POC' : 'More seller-initiated volume'
     const imbNote =
       sellImbalanceCount > 0
         ? ` with ${sellImbalanceCount} strong sell imbalance${sellImbalanceCount === 1 ? '' : 's'}`
         : ''
     return {
-      badge: { label: 'Sellers in control', tone: 'rose' },
+      badge: { label: 'Net selling', tone: 'rose' },
       headline,
       oneLiner: `Market sellers led by ${formatSignedBtc(deltaBtc)} ₿${imbNote} around the ${pocText} POC.`,
     }
@@ -264,16 +267,16 @@ function buildCandleVerdict(params: {
 
   if (Math.abs(deltaPct) < 15 && (buyImbalanceCount > 0 || sellImbalanceCount > 0)) {
     return {
-      badge: { label: 'Heavy clash', tone: 'amber' },
-      headline: 'Passive wall soaking up aggressive orders',
-      oneLiner: `Both sides clashed around the ${pocText} POC, leaving net flow near flat (${formatSignedBtc(deltaBtc)} ₿).`,
+      badge: { label: 'Near-balanced delta', tone: 'amber' },
+      headline: 'Near-balanced delta with price-level imbalances',
+      oneLiner: `Net flow near the ${pocText} POC is near zero (${formatSignedBtc(deltaBtc)} ₿).`,
     }
   }
 
   return {
-    badge: { label: 'Balanced fight', tone: 'blue' },
-    headline: 'Even tug-of-war around POC',
-    oneLiner: `Buyers and sellers are trading evenly around ${pocText} with no decisive breakout yet.`,
+    badge: { label: 'Near-balanced delta', tone: 'blue' },
+    headline: 'Similar buy and sell volume',
+    oneLiner: `Bar delta is ${formatSignedBtc(deltaBtc)} ₿. Point of control is ${pocText}.`,
   }
 }
 
@@ -295,6 +298,7 @@ function finalizeCandleFromRawRows(params: {
   rawRows: RawFootprintCell[]
   maxSideBtc: number
   detectImbalances?: boolean
+  source?: FootprintSource
 }): FootprintCandle {
   const {
     index,
@@ -314,6 +318,7 @@ function finalizeCandleFromRawRows(params: {
     rawRows,
     maxSideBtc,
     detectImbalances = true,
+    source = 'trade-sample',
   } = params
 
   const totalBtc = buyBtc + sellBtc
@@ -391,6 +396,7 @@ function finalizeCandleFromRawRows(params: {
     buyImbalanceCount,
     sellImbalanceCount,
     rows,
+    source,
     ...verdict,
   }
 }
@@ -407,6 +413,7 @@ function buildBackfillCandle(params: {
   const { index, start, end, isDeveloping, baseStepUsd, candle, taker } = params
   if (!candle && !taker) return null
 
+  const source = taker && (taker.buyBtc > 0 || taker.sellBtc > 0) ? 'exchange-totals' : 'candle-estimate'
   let buyBtc = 0
   let sellBtc = 0
   if (taker && (taker.buyBtc > 0 || taker.sellBtc > 0)) {
@@ -467,6 +474,7 @@ function buildBackfillCandle(params: {
       buyImbalanceCount: 0,
       sellImbalanceCount: 0,
       rows: [],
+      source,
       ...verdict,
     }
   }
@@ -527,6 +535,7 @@ function buildBackfillCandle(params: {
     rawRows,
     maxSideBtc,
     detectImbalances: false,
+    source,
   })
 }
 
@@ -2030,6 +2039,8 @@ export type FpbsBarSignalKind =
   | 'empty'
 
 export type FpbsColumn = {
+  source: FootprintSource
+  priceChangePct: number | null
   index: number
   start: number
   end: number
@@ -2063,7 +2074,15 @@ export type FpbsEvaluation = {
   oneLiner: string
 }
 
-export function evaluateFpbsStats(candles: readonly FootprintCandle[]): FpbsEvaluation {
+export function evaluateFpbsStats(
+  candles: readonly FootprintCandle[],
+  exchangeBars: readonly FootprintCandle[] = [],
+): FpbsEvaluation {
+  const historical = new Map(exchangeBars.map(bar => [bar.start, bar]))
+  candles = candles.map(bar => {
+    const exchangeBar = historical.get(bar.start)
+    return !bar.isDeveloping && exchangeBar?.source === 'exchange-totals' ? exchangeBar : bar
+  })
   const maxVol = Math.max(...candles.map(c => c.totalBtc), 0)
   const maxAbsDelta = Math.max(...candles.map(c => Math.abs(c.deltaBtc)), 0)
 
@@ -2072,6 +2091,7 @@ export function evaluateFpbsStats(candles: readonly FootprintCandle[]): FpbsEval
   let totalTradeCount = 0
 
   const columns: FpbsColumn[] = candles.map(c => {
+    const source = c.tradeCount === 0 ? 'missing' : c.source ?? 'trade-sample'
     runningCvdBtc += c.deltaBtc
     windowVolumeBtc += c.totalBtc
     totalTradeCount += c.tradeCount
@@ -2085,6 +2105,7 @@ export function evaluateFpbsStats(candles: readonly FootprintCandle[]): FpbsEval
       signalLabel = '—'
       signalTone = 'blue'
     } else if (
+      source === 'trade-sample' &&
       c.maxDeltaBtc >= 0.25 &&
       c.deltaBtc < 0 &&
       c.close !== null &&
@@ -2092,9 +2113,10 @@ export function evaluateFpbsStats(candles: readonly FootprintCandle[]): FpbsEval
       c.close <= c.pocPrice
     ) {
       signalKind = 'trapped-buyers'
-      signalLabel = '🪤 Buyer Trap'
+      signalLabel = 'Delta turned negative'
       signalTone = 'rose'
     } else if (
+      source === 'trade-sample' &&
       c.minDeltaBtc <= -0.25 &&
       c.deltaBtc > 0 &&
       c.close !== null &&
@@ -2102,15 +2124,15 @@ export function evaluateFpbsStats(candles: readonly FootprintCandle[]): FpbsEval
       c.close >= c.pocPrice
     ) {
       signalKind = 'trapped-sellers'
-      signalLabel = '🪤 Short Trap'
+      signalLabel = 'Delta turned positive'
       signalTone = 'teal'
-    } else if (c.deltaBtc >= 0.15 && c.open !== null && c.close !== null && c.close < c.open) {
+    } else if (source !== 'candle-estimate' && c.deltaBtc >= 0.15 && c.open !== null && c.close !== null && c.close < c.open) {
       signalKind = 'sell-absorption'
-      signalLabel = '🧱 Sell Wall'
+      signalLabel = 'Price fell on net buying'
       signalTone = 'amber'
-    } else if (c.deltaBtc <= -0.15 && c.open !== null && c.close !== null && c.close > c.open) {
+    } else if (source !== 'candle-estimate' && c.deltaBtc <= -0.15 && c.open !== null && c.close !== null && c.close > c.open) {
       signalKind = 'buy-absorption'
-      signalLabel = '🛡️ Buy Floor'
+      signalLabel = 'Price rose on net selling'
       signalTone = 'amber'
     } else if (c.deltaPct >= 15) {
       signalKind = 'buyers-driving'
@@ -2127,6 +2149,10 @@ export function evaluateFpbsStats(candles: readonly FootprintCandle[]): FpbsEval
     }
 
     return {
+      source,
+      priceChangePct: c.open !== null && c.open > 0 && c.close !== null
+        ? ((c.close - c.open) / c.open) * 100
+        : null,
       index: c.index,
       start: c.start,
       end: c.end,
@@ -2184,10 +2210,10 @@ export function evaluateFpbsStats(candles: readonly FootprintCandle[]): FpbsEval
       ? 'live bar'
       : `${new Date(latestTrapOrWall.start).toISOString().slice(11, 16)} UTC`
     badge = {
-      label: `${trapOrWallCols.length} trap/wall ${trapOrWallCols.length === 1 ? 'bar' : 'bars'}`,
+      label: `${trapOrWallCols.length} flagged ${trapOrWallCols.length === 1 ? 'bar' : 'bars'}`,
       tone: latestTrapOrWall.signalTone,
     }
-    headline = `${latestTrapOrWall.signalLabel} detected on ${timeLabel}`
+    headline = `${latestTrapOrWall.signalLabel} · ${timeLabel}`
     oneLiner = `6-bar Running CVD is ${formatSignedBtc(windowCvdBtc)} ₿ across ${windowVolumeBtc.toFixed(2)} ₿ volume, with ${latestTrapOrWall.signalLabel} on ${timeLabel}.`
   } else if (windowCvdBtc > 0) {
     badge = { label: 'Net buying flow', tone: 'teal' }
@@ -2225,20 +2251,21 @@ function escapeCsvCell(value: string): string {
 
 export function formatFpbsCsv(fpbs: FpbsEvaluation): string {
   const header =
-    'Time (UTC),State,Trades,Volume (BTC),Delta (BTC),Delta (%),Max Delta (BTC),Min Delta (BTC),Running CVD (BTC),POC (USD),Signal'
+    'Time (UTC),State,Trades,Volume (BTC),Delta (BTC),Delta (%),Max Delta (BTC),Min Delta (BTC),Running CVD (BTC),POC (USD),Signal,Source'
   const lines = fpbs.columns.map(col =>
     [
       new Date(col.start).toISOString().slice(11, 16),
       col.isDeveloping ? 'Live' : 'Closed',
-      String(col.tradeCount),
-      col.volumeBtc.toFixed(4),
-      col.deltaBtc.toFixed(4),
-      col.deltaPct.toFixed(1),
-      col.maxDeltaBtc.toFixed(4),
-      col.minDeltaBtc.toFixed(4),
-      col.cvdBtc.toFixed(4),
-      col.pocPrice !== null ? String(Math.round(col.pocPrice)) : '',
+      col.source === 'trade-sample' ? String(col.tradeCount) : '',
+      col.source !== 'missing' ? col.volumeBtc.toFixed(4) : '',
+      col.source !== 'missing' ? col.deltaBtc.toFixed(4) : '',
+      col.source !== 'missing' ? col.deltaPct.toFixed(1) : '',
+      col.source === 'trade-sample' ? col.maxDeltaBtc.toFixed(4) : '',
+      col.source === 'trade-sample' ? col.minDeltaBtc.toFixed(4) : '',
+      col.source !== 'missing' ? col.cvdBtc.toFixed(4) : '',
+      col.source === 'trade-sample' && col.pocPrice !== null ? String(Math.round(col.pocPrice)) : '',
       col.signalLabel,
+      col.source,
     ]
       .map(escapeCsvCell)
       .join(','),

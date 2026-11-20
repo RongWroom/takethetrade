@@ -140,7 +140,7 @@ describe('evaluateTradeCheck', () => {
     const s = snap({ deltaBtc: 40, volumeBtc: 100, price: 80_005 })
     const long = find(evaluateTradeCheck({ side: 'long' }, s).checks, 'absorption')
     expect(long.status).toBe('against')
-    expect(long.headline).toContain('above you')
+    expect(long.headline).toContain('Net buying with little change in price')
     expect(find(evaluateTradeCheck({ side: 'short' }, s).checks, 'absorption').status).toBe('good')
   })
 

@@ -213,7 +213,16 @@ export function FootprintTab({
   })
   const onLadderNpocCount = sessionProfile.nakedPocs.filter(n => n.onLadder).length
   const offLadderNpocCount = sessionProfile.nakedPocs.length - onLadderNpocCount
-  const fpbs = evaluateFpbsStats(evaluation.candles)
+  const exchangeBars = backfill
+    ? evaluateFootprint({ trades: [], now, bucketMs, stepOption, backfill }).candles
+    : []
+  const fpbs = evaluateFpbsStats(evaluation.candles, exchangeBars)
+  const [selectedBar, setSelectedBar] = useState<number | null>(null)
+  const focusedBar = fpbs.columns.find(bar => bar.start === selectedBar) ?? fpbs.columns.at(-1)
+  const reportedBars = fpbs.columns.filter(bar => bar.source === 'exchange-totals' && !bar.isDeveloping)
+  const missingBars = fpbs.columns.filter(bar => bar.source === 'missing').length
+  const maxDelta = Math.max(1e-8, ...fpbs.columns.map(bar => Math.abs(bar.deltaBtc)))
+  const reportedDelta = reportedBars.reduce((sum, bar) => sum + bar.deltaBtc, 0)
 
   const handleSvpToolbarKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (supportsFocusGroup) return
@@ -301,7 +310,7 @@ export function FootprintTab({
       panelId: 'fp-panel-fpbs',
       label: 'Bar Stats (FPBS)',
       badge:
-        fpbs.totalTradeCount > 0 ? `CVD ${formatSignedBtc(fpbs.windowCvdBtc)} ₿` : fpbs.badge.label,
+        fpbs.totalTradeCount > 0 ? '6 bars' : 'Waiting for data',
       tone: fpbs.badge.tone,
     },
   ]
@@ -320,11 +329,11 @@ export function FootprintTab({
         className="folder-panel"
         hidden={activeFolder !== 'ladder'}
       >
-        <section className={`fp-card tone-${inspected.badge.tone}`} aria-label="Footprint battleground">
+        <section className={`fp-card tone-${inspected.badge.tone}`} aria-label="Price ladder">
       <div className="fp-header">
         <div className="fp-title-block">
           <div className="fp-eyebrow-row">
-            <span className="eyebrow">SECTION 1 · FOOTPRINT BATTLEGROUND ({timeframeShort.toUpperCase()})</span>
+            <span className="eyebrow">PRICE LADDER ({timeframeShort.toUpperCase()})</span>
             <span className={`fp-verdict-badge tone-${inspected.badge.tone}`}>{inspected.badge.label}</span>
             <span className="fp-meta-chip">
               {timeframeLabel} · ${inspected.stepUsd} steps · {status}
@@ -398,7 +407,7 @@ export function FootprintTab({
           </strong>
           <div className="fp-stat-foot">
             <span>{valueZonePosition}</span>
-            <small>Where 70% of volume fought</small>
+            <small>Price range containing about 70% of volume</small>
           </div>
         </article>
 
@@ -1090,105 +1099,51 @@ export function FootprintTab({
         hidden={activeFolder !== 'fpbs'}
       >
         <section className={`fp-card tone-${fpbs.badge.tone}`} aria-label="Footprint bar statistics">
-          <div className="fp-header">
-            <div className="fp-title-block">
-              <div className="fp-eyebrow-row">
-                <span className="eyebrow">SECTION 4 · 6-BAR STATS STRIP (EXOCHART FPBS)</span>
-                <span className={`fp-verdict-badge tone-${fpbs.badge.tone}`}>{fpbs.badge.label}</span>
-                <span className="fp-meta-chip">
-                  6 × {timeframeShort} bars · {fpbs.totalTradeCount}{' '}
-                  {fpbs.totalTradeCount === 1 ? 'trade' : 'trades'}
-                </span>
-              </div>
-              <h2 className="fp-headline">{fpbs.headline}</h2>
-            </div>
-
-            <button type="button" className="fp-export-btn" onClick={handleExportCsv}>
-              Export CSV ↓
-            </button>
+          <h2 className="fp-headline">Footprint buy/sell</h2>
+          <p className="muted">
+            {reportedBars.length} of 5 closed bars with exchange totals
+            {missingBars > 0 ? ` · ${missingBars} without data` : ''} · {timeframeShort} per bar
+          </p>
+          {reportedBars.length > 0 && (
+            <p className="fp-oneliner"><strong>{formatSignedBtc(reportedDelta)} BTC</strong> net flow across {reportedBars.length} reported closed {reportedBars.length === 1 ? 'bar' : 'bars'}</p>
+          )}
+          <p className="fp-flow-key">Net buying ↑ <span>Net selling ↓</span> · UTC</p>
+          <div className="fp-flow-chart" role="group" aria-label="Select a bar to see its volume and price change">
+            {fpbs.columns.map(bar => {
+              const partial = bar.source === 'trade-sample' || bar.source === 'candle-estimate' || bar.isDeveloping
+              const tone = bar.deltaBtc >= 0 ? 'buy' : 'sell'
+              const label = bar.isDeveloping ? 'Live' : formatTimeUtc(bar.start)
+              const state = bar.source === 'missing' ? 'Missing' : bar.source === 'candle-estimate' ? 'Estimate' : partial ? 'Partial' : 'Closed'
+              return (
+                <button type="button" key={bar.start} aria-pressed={focusedBar?.start === bar.start}
+                  aria-label={`${label}, ${state}${bar.source === 'missing' ? '' : `, delta ${formatSignedBtc(bar.deltaBtc)} BTC`}`}
+                  onClick={() => setSelectedBar(bar.start)}>
+                  <span>{label}</span>
+                  <span className="fp-flow-plot" aria-hidden="true">
+                    {bar.source !== 'missing' && (
+                      <i className={`${tone}${partial ? ' partial' : ''}`}
+                        style={{ height: `${Math.abs(bar.deltaBtc) / maxDelta * 48}%` }} />
+                    )}
+                  </span>
+                  <small>{state}</small>
+                  <small>{Math.abs(bar.deltaBtc) === maxDelta && bar.index === fpbs.peakConvictionCol?.index ? 'Peak Δ' : ''}</small>
+                  <small>{bar.priceChangePct === null ? '—' : `${bar.priceChangePct >= 0 ? '+' : ''}${bar.priceChangePct.toFixed(2)}%`}</small>
+                </button>
+              )
+            })}
           </div>
-
-          <div className="fp-scoreboard">
-            <article className="fp-stat-card">
-              <div className="fp-stat-title">
-                <span aria-hidden="true">📈</span>
-                <span>6-Bar Running CVD</span>
-              </div>
-              <strong
-                className={`fp-stat-value ${
-                  fpbs.totalTradeCount === 0
-                    ? ''
-                    : fpbs.windowCvdBtc > 0
-                      ? 'up'
-                      : fpbs.windowCvdBtc < 0
-                        ? 'down'
-                        : ''
-                }`}
-              >
-                {fpbs.totalTradeCount > 0 ? `${formatSignedBtc(fpbs.windowCvdBtc)} ₿` : '—'}
-              </strong>
-              <div className="fp-stat-foot">
-                <span>
-                  {fpbs.windowVolumeBtc.toFixed(2)} ₿ window vol ({fpbs.windowDeltaPct >= 0 ? '+' : ''}
-                  {Math.round(fpbs.windowDeltaPct)}%)
-                </span>
-                <small>Cumulative net delta</small>
-              </div>
-            </article>
-
-            <article className="fp-stat-card">
-              <div className="fp-stat-title">
-                <span aria-hidden="true">🪤</span>
-                <span>Intrabar Traps &amp; Walls</span>
-              </div>
-              <strong className={`fp-stat-value ${fpbs.trapOrWallCount > 0 ? 'amber' : ''}`}>
-                {fpbs.totalTradeCount === 0
-                  ? '—'
-                  : fpbs.trapOrWallCount > 0
-                    ? `${fpbs.trapOrWallCount} ${fpbs.trapOrWallCount === 1 ? 'bar flagged' : 'bars flagged'}`
-                    : 'Clean flow · 0 traps'}
-              </strong>
-              <div className="fp-stat-foot">
-                <span>
-                  {fpbs.latestTrapOrWall
-                    ? `${fpbs.latestTrapOrWall.isDeveloping ? 'Now' : formatTimeUtc(fpbs.latestTrapOrWall.start)}: ${fpbs.latestTrapOrWall.signalLabel}`
-                    : 'Delta & price moving in sync'}
-                </span>
-                <small>Delta flips &amp; passive walls</small>
-              </div>
-            </article>
-
-            <article className="fp-stat-card">
-              <div className="fp-stat-title">
-                <span aria-hidden="true">🔥</span>
-                <span>Peak Conviction Bar</span>
-              </div>
-              <strong
-                className={`fp-stat-value ${
-                  fpbs.peakConvictionCol
-                    ? fpbs.peakConvictionCol.deltaBtc > 0
-                      ? 'up'
-                      : fpbs.peakConvictionCol.deltaBtc < 0
-                        ? 'down'
-                        : ''
-                    : ''
-                }`}
-              >
-                {fpbs.peakConvictionCol
-                  ? `${formatSignedBtc(fpbs.peakConvictionCol.deltaBtc)} ₿ (${fpbs.peakConvictionCol.deltaPct >= 0 ? '+' : ''}${Math.round(fpbs.peakConvictionCol.deltaPct)}%)`
-                  : '—'}
-              </strong>
-              <div className="fp-stat-foot">
-                <span>
-                  {fpbs.peakConvictionCol
-                    ? `${fpbs.peakConvictionCol.isDeveloping ? 'Now · Live' : `${formatTimeUtc(fpbs.peakConvictionCol.start)} UTC`} · ${fpbs.peakConvictionCol.volumeBtc.toFixed(2)} ₿ vol`
-                    : 'Waiting for trades'}
-                </span>
-                <small>Strongest single-bar push</small>
-              </div>
-            </article>
-          </div>
-
+          <p className="muted">Bottom row shows price change. Peak Δ marks the largest net volume difference.</p>
+          {focusedBar && (
+            <p className="fp-oneliner">
+              <strong>{focusedBar.isDeveloping ? 'Live bar' : `${formatTimeUtc(focusedBar.start)} UTC`}</strong>
+              {focusedBar.source === 'missing'
+                ? ' · Data unavailable'
+                : ` · ${formatSignedBtc(focusedBar.deltaBtc)} BTC net flow · ${focusedBar.volumeBtc.toFixed(2)} BTC volume · ${focusedBar.signalLabel}`}
+            </p>
+          )}
+          <details className="fp-takeaway">
+            <summary>Detailed stats and export</summary>
+            <button type="button" className="fp-export-btn" onClick={handleExportCsv}>Export CSV</button>
           <div className="fp-fpbs-wrap" role="region" aria-label="FPBS stats matrix" tabIndex={0}>
             <table className="fp-fpbs-table">
               <thead>
@@ -1275,7 +1230,7 @@ export function FootprintTab({
                   {fpbs.columns.map(col => (
                     <td key={col.start} className="fp-fpbs-cell">
                       <span className={`fp-fpbs-val ${col.tradeCount > 0 && col.maxDeltaBtc > 0 ? 'up' : ''}`}>
-                        {col.tradeCount > 0 ? `+${col.maxDeltaBtc.toFixed(2)} ₿` : '—'}
+                        {col.source === 'trade-sample' ? `+${col.maxDeltaBtc.toFixed(2)} ₿` : '—'}
                       </span>
                     </td>
                   ))}
@@ -1285,7 +1240,7 @@ export function FootprintTab({
                   {fpbs.columns.map(col => (
                     <td key={col.start} className="fp-fpbs-cell">
                       <span className={`fp-fpbs-val ${col.tradeCount > 0 && col.minDeltaBtc < 0 ? 'down' : ''}`}>
-                        {col.tradeCount > 0 ? `${formatSignedBtc(col.minDeltaBtc)} ₿` : '—'}
+                        {col.source === 'trade-sample' ? `${formatSignedBtc(col.minDeltaBtc)} ₿` : '—'}
                       </span>
                     </td>
                   ))}
@@ -1298,18 +1253,18 @@ export function FootprintTab({
                     return (
                       <td key={col.start} className="fp-fpbs-cell">
                         <span className={`fp-fpbs-val ${tone}`}>
-                          {hasCvd ? `${formatSignedBtc(col.cvdBtc)} ₿` : '—'}
+                          {hasCvd && col.source !== 'missing' ? `${formatSignedBtc(col.cvdBtc)} ₿` : '—'}
                         </span>
                       </td>
                     )
                   })}
                 </tr>
                 <tr>
-                  <th scope="row">POC &amp; Signal</th>
+                  <th scope="row">POC &amp; pattern</th>
                   {fpbs.columns.map(col => (
                     <td key={col.start} className="fp-fpbs-cell">
                       <div className="fp-fpbs-sig-cell">
-                        <span className="fp-fpbs-poc">{formatPriceDollar(col.pocPrice)}</span>
+                        <span className="fp-fpbs-poc">{formatPriceDollar(col.source === 'trade-sample' ? col.pocPrice : null)}</span>
                         <span className={`fp-fpbs-sig tone-${col.signalTone}`}>{col.signalLabel}</span>
                       </div>
                     </td>
@@ -1319,14 +1274,14 @@ export function FootprintTab({
             </table>
           </div>
 
-          <div className="fp-takeaway">
-            <p className="fp-oneliner">{fpbs.oneLiner}</p>
-            <div className="fp-legend" aria-label="FPBS stats legend">
-              <span className="fp-legend-chip">Delta % = Net conviction</span>
-              <span className="fp-legend-chip">Max/Min Δ = Intrabar extremes</span>
-              <span className="fp-legend-chip">🪤/🧱 = Flip or absorption</span>
-            </div>
-          </div>
+          </details>
+          <details className="fp-takeaway">
+            <summary>How to read these stats</summary>
+            <p><strong>Delta</strong> is buyer-initiated volume minus seller-initiated volume. Delta % divides that difference by total volume. Running CVD adds the available deltas across the displayed bars, including any labelled samples or estimates.</p>
+            <p><strong>Price rose on net selling</strong> means the bar closed above its open even though seller-initiated volume exceeded buyer-initiated volume by at least 0.15 BTC. <strong>Price fell on net buying</strong> is the reverse. For a live bar, the comparison uses the latest price.</p>
+            <p><strong>Delta turned negative or positive</strong> means cumulative delta reached at least +0.25 BTC before ending negative, or reached −0.25 BTC or lower before ending positive. The rule also checks that the latest price is on the same side of the point of control (POC) as the final delta, or at that level.</p>
+            <p><strong>POC</strong> is the price level with the most volume in the footprint. Max and min delta show the range of cumulative delta within the bar when individual trades are available. For reconstructed bars, POC is estimated when available. The stats table and CSV omit trade count, POC and delta extremes when based on aggregate data.</p>
+          </details>
         </section>
       </div>
     </FolderShell>

@@ -46,6 +46,8 @@ function formatUtcStamp(iso: string): string {
 
 type Props = {
   open: boolean
+  mode: 'plan' | 'journal'
+  onOpenJournal: () => void
   onClose: () => void
   draft: DraftIntent
   setDraft: Dispatch<SetStateAction<DraftIntent>>
@@ -59,6 +61,8 @@ type Props = {
 
 export function MyTradePanel({
   open,
+  mode,
+  onOpenJournal,
   onClose,
   draft,
   setDraft,
@@ -90,7 +94,7 @@ export function MyTradePanel({
     return [createJournalEntry(captureSnapshot(), { id: 'live-snapshot' })]
   }
 
-  const handleLogSnapshot = () => {
+  const handleLogSnapshot = (outcome: TradeOutcome = 'open') => {
     const raw = captureSnapshot()
     const lockedEntry =
       raw.myTrade.entryInput.trim() === '' && raw.market.price !== null
@@ -103,7 +107,7 @@ export function MyTradePanel({
         entryInput: lockedEntry,
       },
     }
-    const created = journal.logSnapshot(snap)
+    const created = journal.logSnapshot(snap, { outcome })
     flashFeedback(`Logged snapshot at ${created.createdAtIso.slice(11, 19)} UTC`)
   }
 
@@ -169,10 +173,14 @@ export function MyTradePanel({
     }
   }
 
-  const wins = journal.entries.filter(e => e.outcome === 'win').length
-  const losses = journal.entries.filter(e => e.outcome === 'loss').length
-  const decided = wins + losses
-  const winRate = decided > 0 ? Math.round((wins / decided) * 100) : null
+  const [reviewClock, setReviewClock] = useState(() => Date.now())
+  useEffect(() => {
+    if (!open) return
+    const timer = setInterval(() => setReviewClock(Date.now()), 60_000)
+    return () => clearInterval(timer)
+  }, [open])
+  const recentEntries = journal.entries.filter(entry => entry.createdAtMs >= reviewClock - 7 * 24 * 60 * 60 * 1000)
+  const reviewedCount = recentEntries.filter(entry => entry.processGrade).length
 
   const issueFor = (field: 'entry' | 'stop' | 'leverage') => result?.issues.find(i => i.field === field)?.message
   const update = (patch: Partial<DraftIntent>) => setDraft(prev => ({ ...prev, ...patch }))
@@ -233,10 +241,10 @@ export function MyTradePanel({
       <div className="dialog-content">
         <div className="dialog-head">
           <div>
-            <p className="eyebrow">TRADE CONTEXT · {timeframeLabel.toUpperCase()}</p>
-            <h2 id="my-trade-title">My Trade</h2>
+            {mode === 'plan' && <p className="eyebrow">TRADE CONTEXT · {timeframeLabel.toUpperCase()}</p>}
+            <h2 id="my-trade-title">{mode === 'plan' ? 'My Trade' : 'Journal'}</h2>
           </div>
-          <button className="close" onClick={onClose} aria-label="Close My Trade">
+          <button className="close" onClick={onClose} aria-label={mode === 'plan' ? 'Close My Trade' : 'Close Journal'}>
             ×
           </button>
         </div>
@@ -245,6 +253,7 @@ export function MyTradePanel({
           <span aria-hidden="true">🔒</span> Read-only. This app cannot place trades. What you enter stays in this browser.
         </p>
 
+        <div hidden={mode !== 'plan'}>
         <div className="mt-actions">
           <span className="mt-section-label">Trade direction</span>
           <button type="button" className="secondary mt-reset" onClick={resetTrade}>
@@ -322,20 +331,27 @@ export function MyTradePanel({
           </>
         )}
 
-        <section className="mt-journal" aria-label="Snapshot and Trade Journal">
+          <div className="mt-export-bar">
+            <button type="button" className="mt-log-btn" disabled={!draft.side}
+              onClick={() => handleLogSnapshot()}>Log trade snapshot</button>
+            <button type="button" className="mt-export-btn"
+              onClick={() => handleLogSnapshot('no-trade')}>Log no trade</button>
+            <button type="button" className="mt-export-btn" onClick={onOpenJournal}>Open journal</button>
+          </div>
+        </div>
+
+        <section className="mt-journal" aria-label="Trade reviews" hidden={mode !== 'journal'}>
           <div className="mt-journal-head">
             <div>
-              <span className="mt-section-label">Snapshot &amp; Journal</span>
-              <p className="mt-journal-sub">
-                Freeze all current page data at entry, tag Win/Loss later, and copy for Google Sheets or an LLM.
-              </p>
+              <span className="mt-section-label">Review your decisions</span>
+              <p className="mt-journal-sub">Grade how you handled the decision. Record the outcome and one lesson separately.</p>
             </div>
-            <button type="button" className="mt-log-btn" onClick={handleLogSnapshot}>
-              + Log Trade Snapshot
-            </button>
+
           </div>
 
-          <div className="mt-export-bar" role="group" aria-label="Export or copy journal data">
+          <details>
+            <summary>Export journal</summary>
+            <div className="mt-export-bar" role="group" aria-label="Export or copy journal data">
             <button type="button" className="mt-export-btn" onClick={handleCopySheets}>
               Copy for Sheets
             </button>
@@ -350,24 +366,17 @@ export function MyTradePanel({
             </button>
           </div>
 
-          {feedback && (
-            <div className="mt-feedback" role="status" aria-live="polite">
-              {feedback}
-            </div>
-          )}
+          </details>
 
           {journal.entries.length === 0 ? (
             <p className="mt-journal-empty">
-              No logged snapshots yet. Click <strong>+ Log Trade Snapshot</strong> when you take a trade (or use the buttons above to export the current live page immediately).
+              No decisions logged. Open My Trade to save a trade snapshot or a decision to sit out.
             </p>
           ) : (
             <>
               <div className="mt-journal-stats">
                 <span>
-                  <strong>{journal.entries.length}</strong> logged ·{' '}
-                  <span className="win-stat">{wins}W</span> ·{' '}
-                  <span className="loss-stat">{losses}L</span>
-                  {winRate !== null ? ` · ${winRate}% win rate` : ''}
+                  <strong>{reviewedCount} of {recentEntries.length}</strong> decisions reviewed in the last 7 days
                 </span>
                 <button type="button" className="mt-clear-journal" onClick={journal.clearJournal}>
                   Clear Journal
@@ -379,10 +388,10 @@ export function MyTradePanel({
                   const s = entry.snapshot
                   const pnl = computeJournalPnl(entry)
                   const sideTag =
-                    s.myTrade.side === 'long'
-                      ? '▲ BUY / UP'
+                    entry.outcome === 'no-trade' ? 'NO TRADE' : s.myTrade.side === 'long'
+                      ? '▲ LONG'
                       : s.myTrade.side === 'short'
-                        ? '▼ SELL / DOWN'
+                        ? '▼ SHORT'
                         : 'SNAPSHOT'
                   const sideClass = s.myTrade.side ?? 'neutral'
                   const entryPxText =
@@ -394,7 +403,7 @@ export function MyTradePanel({
                       <div className="mt-jc-top">
                         <div className="mt-jc-meta">
                           <span className={`mt-jc-side ${sideClass}`}>{sideTag}</span>
-                          <strong>{entryPxText}</strong>
+                          {entry.outcome !== 'no-trade' && <strong>{entryPxText}</strong>}
                           <small>
                             {s.timeframe} · {formatUtcStamp(entry.createdAtIso)}
                           </small>
@@ -409,7 +418,9 @@ export function MyTradePanel({
                         </button>
                       </div>
 
-                      <div className="mt-jc-chips">
+                      <details>
+                        <summary>Market at capture</summary>
+                        <div className="mt-jc-chips">
                         <span className="mt-jc-chip">
                           {s.oiRegime.marketTitle ? `${s.oiRegime.marketTitle} (${s.oiRegime.sentiment})` : s.confirmationStatus}
                         </span>
@@ -426,7 +437,25 @@ export function MyTradePanel({
                         )}
                       </div>
 
-                      <div className="mt-jc-outcomes" role="group" aria-label="Trade outcome">
+                      </details>
+                      <label className="mt-jc-inputs">
+                        <span>Process grade</span>
+                        <select value={entry.processGrade ?? ''} onChange={event => {
+                          const grade = event.target.value
+                          journal.updateEntry(entry.id, { processGrade: grade === 'A' || grade === 'B' || grade === 'C' ? grade : undefined })
+                        }}>
+                          <option value="">Unreviewed</option>
+                          <option value="A">A · Followed plan</option>
+                          <option value="B">B · Minor deviation</option>
+                          <option value="C">C · Broke a key rule</option>
+                        </select>
+                      </label>
+                      <details>
+                        <summary>How to grade</summary>
+                        <p>A means you followed your setup, risk and exit rules. B means you made a minor deviation. C means you broke a key rule. For a decision to sit out, grade how well you followed your criteria for waiting.</p>
+                      </details>
+
+                      <div className="mt-jc-outcomes" role="group" aria-label="Trade outcome" hidden={entry.outcome === 'no-trade'}>
                         {OUTCOME_OPTIONS.map(opt => (
                           <button
                             key={opt.id}
@@ -450,7 +479,7 @@ export function MyTradePanel({
                       </div>
 
                       <div className="mt-jc-inputs">
-                        <div className="mt-jc-exit-row">
+                        <div className="mt-jc-exit-row" hidden={entry.outcome === 'no-trade'}>
                           <input
                             type="text"
                             inputMode="decimal"
@@ -472,7 +501,7 @@ export function MyTradePanel({
                         <input
                           type="text"
                           aria-label="Trade note"
-                          placeholder="Quick note (setup, reason, lesson…)"
+                          placeholder="One lesson or reason for waiting"
                           value={entry.notes}
                           onChange={e => journal.updateEntry(entry.id, { notes: e.target.value })}
                         />
@@ -493,6 +522,7 @@ export function MyTradePanel({
             </>
           )}
         </section>
+        {feedback && <div className="mt-feedback" role="status">{feedback}</div>}
       </div>
     </dialog>
   )

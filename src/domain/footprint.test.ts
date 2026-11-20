@@ -613,10 +613,10 @@ describe('evaluateFpbsStats & formatFpbsCsv', () => {
     const lines = csv.split('\n')
     expect(lines).toHaveLength(7)
     expect(lines[0]).toBe(
-      'Time (UTC),State,Trades,Volume (BTC),Delta (BTC),Delta (%),Max Delta (BTC),Min Delta (BTC),Running CVD (BTC),POC (USD),Signal',
+      'Time (UTC),State,Trades,Volume (BTC),Delta (BTC),Delta (%),Max Delta (BTC),Min Delta (BTC),Running CVD (BTC),POC (USD),Signal,Source',
     )
     expect(lines[6]).toContain('Live')
-    expect(lines[6]).toContain('Buyer Trap')
+    expect(lines[6]).toContain('Delta turned negative')
   })
 
   it('fills prior closed bars from REST backfill when raw live ticks only cover the latest bar', () => {
@@ -649,8 +649,22 @@ describe('evaluateFpbsStats & formatFpbsCsv', () => {
       bucketMs: tf5m,
       backfill: { candles, takerBuckets },
     })
-    const fpbs = evaluateFpbsStats(fp.candles)
+    const sample = evaluateFootprint({
+      trades: [
+        makeTrade('partial-closed', baseTime + 4 * tf5m + 10_000, 'buy', 80_145, '0.5'),
+        ...liveTrades,
+      ],
+      now,
+      bucketMs: tf5m,
+      backfill: { candles, takerBuckets },
+    })
+    const fpbs = evaluateFpbsStats(sample.candles, fp.candles)
 
+    expect(fpbs.columns.slice(0, 5).every(col => col.source === 'exchange-totals')).toBe(true)
+    expect(fpbs.columns[5].source).toBe('trade-sample')
+    expect(formatFpbsCsv(fpbs).split('\n')[5].split(',').slice(2, 8)).toEqual([
+      '', '9.0000', '-1.0000', '-11.1', '', '',
+    ])
     expect(fpbs.columns).toHaveLength(6)
     for (const col of fpbs.columns) {
       expect(col.tradeCount).toBeGreaterThan(0)
@@ -663,6 +677,3 @@ describe('evaluateFpbsStats & formatFpbsCsv', () => {
     expect(fpbs.windowCvdBtc).toBeCloseTo(7, 6)
   })
 })
-
-
-

@@ -238,6 +238,7 @@ describe('tradeJournal domain', () => {
       wins: 1,
       losses: 1,
       breakevens: 0,
+      noTrade: 0,
       winRatePct: 50,
     })
     expect(parsed.entries).toHaveLength(3)

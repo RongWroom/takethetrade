@@ -277,7 +277,7 @@ function checkDivergence(side: TradeSide, s: MarketSnapshot): TradeCheckItem {
 }
 
 function checkAbsorption(side: TradeSide, s: MarketSnapshot): TradeCheckItem {
-  const title = 'Hidden big orders'
+  const title = 'Possible absorption'
   const price = s.flowPrice === undefined ? s.price : s.flowPrice
   if (price === null || s.priceStart === null || s.deltaBtc === null || s.volumeBtc === null || s.priceStart <= 0)
     return unknown('absorption', title, 'price and flow data')
@@ -290,8 +290,8 @@ function checkAbsorption(side: TradeSide, s: MarketSnapshot): TradeCheckItem {
       id: 'absorption',
       status: 'neutral',
       title,
-      headline: 'No sign of a hidden wall soaking up orders.',
-      explanation: 'Absorption is when one side pushes hard but price will not move, because a large passive trader is taking the other side.',
+      headline: 'No absorption pattern flagged.',
+      explanation: 'This check flags a price change of 0.02% or less in either direction when the absolute delta is at least 25% of volume.',
       evidence,
     }
   const buyersAbsorbed = imbalance > 0
@@ -301,11 +301,9 @@ function checkAbsorption(side: TradeSide, s: MarketSnapshot): TradeCheckItem {
     status: against ? 'against' : 'good',
     title,
     headline: buyersAbsorbed
-      ? `Buyers are pushing but price won't rise. A big seller is soaking it up${side === 'long' ? ' above you' : ''}.`
-      : `Sellers are pushing but price won't fall. A big buyer is soaking it up${side === 'short' ? ' below you' : ''}.`,
-    explanation: against
-      ? `Someone with large limit orders is absorbing the side your ${side} needs. Until they are done, price may struggle to move your way.`
-      : `The other side is pushing hard and getting nowhere. A large trader appears to be defending the direction of your ${side}.`,
+      ? 'Net buying with little change in price.'
+      : 'Net selling with little change in price.',
+    explanation: 'Price moved no more than 0.02% and the absolute delta was at least 25% of volume. The check uses traded volume and price change to infer possible absorption.',
     evidence,
   }
 }
@@ -353,14 +351,13 @@ function checkLocation(side: TradeSide, s: MarketSnapshot, ref: number | null, m
   const expensive = side === 'long' ? inAtr : -inAtr
   const evidence = `${mode === 'position' ? 'Entry' : 'Price'} ${usd(ref)} · 6h VWAP ${usd(s.vwap)} (${pct(distPct)}) · typical 15m range ${s.atrPct.toFixed(2)}%`
   const where = mode === 'position' ? 'You entered' : "You'd be entering"
-  const verb = side === 'long' ? 'buying' : 'selling'
   if (expensive >= 3)
     return {
       id: 'location',
       status: 'against',
       title,
       headline: `${where} far ${side === 'long' ? 'above' : 'below'} the average price. This looks like chasing.`,
-      explanation: `${verb[0].toUpperCase()}${verb.slice(1)} ${Math.abs(distPct).toFixed(2)}% away from the 6-hour average price, more than 3× a normal 15-minute move. Late entries often get caught when price snaps back toward the average.`,
+      explanation: `The distance from the 6-hour VWAP is ${Math.abs(distPct).toFixed(2)}%, at least three times the typical 15-minute range used by this check.`,
       evidence,
     }
   if (expensive >= 1.5)
@@ -369,7 +366,7 @@ function checkLocation(side: TradeSide, s: MarketSnapshot, ref: number | null, m
       status: 'caution',
       title,
       headline: `${where} ${side === 'long' ? 'above' : 'below'} the average price. You may be a little late.`,
-      explanation: `Price has already moved ${Math.abs(distPct).toFixed(2)}% from the 6-hour average. Not a deal-breaker, but there's less room before a pullback.`,
+      explanation: `The distance from the 6-hour VWAP is ${Math.abs(distPct).toFixed(2)}%. This check compares that distance with the typical 15-minute range.`,
       evidence,
     }
   if (expensive <= -0.5)
@@ -377,8 +374,8 @@ function checkLocation(side: TradeSide, s: MarketSnapshot, ref: number | null, m
       id: 'location',
       status: 'good',
       title,
-      headline: `${where} ${side === 'long' ? 'below' : 'above'} the average price, a good spot for a ${side}.`,
-      explanation: `You're ${verb} at a better price than most traders paid over the last 6 hours (VWAP).`,
+      headline: `${where} ${side === 'long' ? 'below' : 'above'} the volume-weighted average price (VWAP).`,
+      explanation: `This check compares the entry or latest price with the 6-hour volume-weighted average price.`,
       evidence,
     }
   return {
@@ -386,7 +383,7 @@ function checkLocation(side: TradeSide, s: MarketSnapshot, ref: number | null, m
     status: 'neutral',
     title,
     headline: `${where} close to the average price.`,
-    explanation: 'Neither chasing nor getting a bargain. Price is near where most volume traded over the last 6 hours.',
+    explanation: 'Price is close to the 6-hour volume-weighted average price.',
     evidence,
   }
 }

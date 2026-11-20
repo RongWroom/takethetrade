@@ -288,11 +288,11 @@ function buildMetrics(params: {
   const cvdMedian = calculateCvdMedianProfile(cvdSeries, volumeSeries)
 
   const cvdPlain = cvd === null
-    ? 'Waiting for trades to track the running tug-of-war between buyers and sellers.'
+    ? 'Waiting for trades to calculate cumulative volume delta.'
     : cvd > 0n
-      ? `Buyers are winning the tug-of-war (${formatSignedBtc(cvd)} net buying across ${timeframe.shortLabel} buckets). ${cvdMedian.summary}`
+      ? `Net buying across the displayed ${timeframe.shortLabel} bars. CVD is ${formatSignedBtc(cvd)}. ${cvdMedian.summary}`
       : cvd < 0n
-        ? `Sellers are winning the tug-of-war (${formatSignedBtc(cvd)} net selling across ${timeframe.shortLabel} buckets). ${cvdMedian.summary}`
+        ? `Net selling across the displayed ${timeframe.shortLabel} bars. CVD is ${formatSignedBtc(cvd)}. ${cvdMedian.summary}`
         : `Buyers and sellers have canceled each other out across ${timeframe.shortLabel} buckets. ${cvdMedian.summary}`
 
   const oiCurrentNum = oi !== null ? Number(oi) : null

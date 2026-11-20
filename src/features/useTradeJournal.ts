@@ -10,7 +10,7 @@ export const JOURNAL_STORAGE_KEY = 'ttt.journal.v1'
 const MAX_JOURNAL_ENTRIES = 100
 
 function isValidOutcome(val: unknown): val is TradeOutcome {
-  return val === 'open' || val === 'win' || val === 'loss' || val === 'breakeven'
+  return val === 'open' || val === 'win' || val === 'loss' || val === 'breakeven' || val === 'no-trade'
 }
 
 function loadEntries(): JournalEntry[] {
@@ -46,7 +46,7 @@ export type UseTradeJournalReturn = {
   ) => JournalEntry
   updateEntry: (
     id: string,
-    patch: Partial<Pick<JournalEntry, 'outcome' | 'exitPrice' | 'notes'>>,
+    patch: Partial<Pick<JournalEntry, 'outcome' | 'exitPrice' | 'notes' | 'processGrade'>>,
   ) => void
   deleteEntry: (id: string) => void
   clearJournal: () => void
@@ -76,7 +76,7 @@ export function useTradeJournal(): UseTradeJournalReturn {
   )
 
   const updateEntry = useCallback(
-    (id: string, patch: Partial<Pick<JournalEntry, 'outcome' | 'exitPrice' | 'notes'>>) => {
+    (id: string, patch: Partial<Pick<JournalEntry, 'outcome' | 'exitPrice' | 'notes' | 'processGrade'>>) => {
       setEntries(prev => prev.map(item => (item.id === id ? { ...item, ...patch } : item)))
     },
     [],

@@ -5,7 +5,8 @@ import type { CheckStatus, MarketSnapshot, TradeCheckResult, TradeSide } from '.
 import type { OiRegimeEvaluation, PulseEvaluation } from './tradeEngine'
 import type { Metric } from '../fixtures/demo'
 
-export type TradeOutcome = 'open' | 'win' | 'loss' | 'breakeven'
+export type TradeOutcome = 'open' | 'win' | 'loss' | 'breakeven' | 'no-trade'
+export type ProcessGrade = 'A' | 'B' | 'C'
 
 export type SnapshotCardSummary = {
   id: Metric['id']
@@ -167,6 +168,7 @@ export type JournalEntry = {
   createdAtMs: number
   createdAtIso: string
   outcome: TradeOutcome
+  processGrade?: ProcessGrade
   exitPrice: string
   notes: string
   snapshot: PageDataSnapshot
@@ -195,7 +197,7 @@ export function computeJournalPnl(entry: JournalEntry): JournalPnlEvaluation {
   const exitPriceNum = parseCleanPositive(entry.exitPrice)
   const leverageNum = parseCleanPositive(myTrade.leverageInput)
 
-  if (!myTrade.side || entryPriceUsed === null || entryPriceUsed <= 0 || exitPriceNum === null) {
+  if (entry.outcome === 'no-trade' || !myTrade.side || entryPriceUsed === null || entryPriceUsed <= 0 || exitPriceNum === null) {
     return {
       entryPriceUsed,
       exitPriceNum,
@@ -459,6 +461,7 @@ export const JOURNAL_COLUMNS: readonly string[] = [
   'Move %',
   'Leveraged Return %',
   'Notes',
+  'Process Grade',
   'Market Price',
   '6h VWAP',
   '15m ATR %',
@@ -520,6 +523,7 @@ export function journalEntryToRow(entry: JournalEntry): string[] {
     numStr(pnl.priceMovePct, 2),
     numStr(pnl.leveragedPnlPct, 2),
     entry.notes,
+    entry.processGrade ?? '',
     numStr(s.market.price, 2),
     numStr(s.market.vwap6h, 2),
     numStr(s.market.atr15mPct, 2),
@@ -594,12 +598,14 @@ export function serializeJournalJson(entries: readonly JournalEntry[]): string {
       wins,
       losses,
       breakevens,
+      noTrade: entries.filter(e => e.outcome === 'no-trade').length,
       winRatePct: decided > 0 ? Number(((wins / decided) * 100).toFixed(1)) : null,
     },
     entries: entries.map(entry => ({
       id: entry.id,
       createdAtIso: entry.createdAtIso,
       outcome: entry.outcome,
+      processGrade: entry.processGrade ?? null,
       exitPrice: entry.exitPrice || null,
       notes: entry.notes || null,
       pnl: computeJournalPnl(entry),

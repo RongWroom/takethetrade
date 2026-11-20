@@ -79,11 +79,10 @@ function App() {
   const [timeframe, setTimeframe] = useState<TimeframeId>('1m')
   const [showFullMatrix, setShowFullMatrix] = useState(false)
   const [dismissedIds, setDismissedIds] = useState<string[]>([])
-  const [flippedCards, setFlippedCards] = useState<Record<string, boolean>>({})
   const dialog = useRef<HTMLDialogElement>(null)
   const { mode: confirmationMode, setMode: setConfirmationMode } = useConfirmationPreference()
   const live = useLiveMarketData(timeframe, confirmationMode)
-  const [tradeOpen, setTradeOpen] = useState(false)
+  const [tradePanel, setTradePanel] = useState<'plan' | 'journal' | null>(null)
   const trade = useTradeCheck(live.snapshot)
   const journal = useTradeJournal()
 
@@ -124,10 +123,6 @@ function App() {
       tradeResult: trade.result,
     })
 
-  const toggleFlip = (id: string) => {
-    setFlippedCards(prev => ({ ...prev, [id]: !prev[id] }))
-  }
-
   useEffect(() => {
     if (panel && !dialog.current?.open) dialog.current?.showModal()
     if (!panel && dialog.current?.open) dialog.current.close()
@@ -156,7 +151,7 @@ function App() {
       id: 'metrics',
       tabId: 'ov-tab-metrics',
       panelId: 'ov-panel-metrics',
-      label: 'Flow Metrics',
+      label: 'Market metrics',
       badge: live.metrics[0]?.value ?? '4 cards',
       tone: toFolderTone(live.metrics[0]?.color ?? 'teal'),
     },
@@ -164,7 +159,7 @@ function App() {
       id: 'pulse',
       tabId: 'ov-tab-pulse',
       panelId: 'ov-panel-pulse',
-      label: 'Pulse & OI Matrix',
+      label: 'Open interest',
       badge: live.oiRegime.activeRow
         ? `${live.oiRegime.activeRow.marketTitle} · ${live.oiRegime.activeRow.sentiment}`
         : confirmationInfo.status,
@@ -208,7 +203,8 @@ function App() {
           </button>
           <button onClick={() => setPanel('guide')}>Guide</button>
           <button onClick={() => setPanel('settings')}>Settings</button>
-          <button className="nav-trade" onClick={() => setTradeOpen(true)} aria-haspopup="dialog">
+          <button onClick={() => setTradePanel('journal')} aria-haspopup="dialog">Journal</button>
+          <button className="nav-trade" onClick={() => setTradePanel('plan')} aria-haspopup="dialog">
             My Trade
             {trade.draft.side && (
               <span className={`nav-trade-side ${trade.draft.side}`}>{trade.draft.side === 'long' ? '▲ Long' : '▼ Short'}</span>
@@ -237,13 +233,7 @@ function App() {
       <main id="overview" className="container">
         <div className="intro">
           <div>
-            <p className="eyebrow">
-              {activeTab === 'footprint'
-                ? `YOUR FOOTPRINT ARENA · ${timeframe.toUpperCase()} WINDOW`
-                : `YOUR MARKET OVERVIEW · ${timeframe.toUpperCase()} WINDOW`}
-            </p>
-            <h1>Clarity in the flow.</h1>
-            <p className="muted">Plain-English order flow for buyers and sellers.</p>
+            <h1>{activeTab === 'footprint' ? 'Trade footprint' : 'Market overview'}</h1>
           </div>
           <div className="market">
             <span>
@@ -311,109 +301,20 @@ function App() {
                     </span>
                   </div>
                   <div className="grid">
-                    {live.metrics.map(m => {
-                      const isFlipped = Boolean(flippedCards[m.id])
-                      return (
-                        <div
-                          key={m.id}
-                          role="button"
-                          tabIndex={0}
-                          aria-label={`Flip ${m.label} card`}
-                          className={`metric ${m.color} ${isFlipped ? 'is-flipped' : ''}`}
-                          onClick={() => toggleFlip(m.id)}
-                          onKeyDown={e => {
-                            if (e.key === 'Enter' || e.key === ' ') {
-                              e.preventDefault()
-                              toggleFlip(m.id)
-                            }
-                          }}
-                        >
-                          <span className="card-head">
-                            <span>
-                              {m.label}
-                              <small className="flip-hint">{isFlipped ? ' · Flipped ↺' : ' · Flip ↻'}</small>
-                            </span>
-                            <button
-                              type="button"
-                              className="icon-detail-btn"
-                              aria-label={`Open ${m.label} details`}
-                              onClick={e => {
-                                e.stopPropagation()
-                                setPanel(m.id)
-                              }}
-                            >
-                              →
-                            </button>
+                    {live.metrics.map(metric => (
+                      <button type="button" key={metric.id}
+                        className={`metric ${metric.color}`}
+                        onClick={() => setPanel(metric.id)}
+                        aria-label={`Open ${metric.label} details`}>
+                        <span className="card-head">{metric.label} <span aria-hidden="true">→</span></span>
+                        <strong>{metric.value}</strong>
+                        {!focus && (
+                          <span className="chart" aria-hidden="true">
+                            {metric.bars.map((height, i) => <i key={i} style={{ height: `${height}%` }} />)}
                           </span>
-                          {!isFlipped ? (
-                            <>
-                              <strong>{m.value}</strong>
-                              {!focus && (
-                                <>
-                                  <span className="chart" aria-hidden="true">
-                                    {m.bars.map((h, i) => (
-                                      <i key={i} style={{ height: `${h}%`, opacity: 0.5 + i / 24 }} />
-                                    ))}
-                                  </span>
-                                  <span className="card-foot">
-                                    <span>{m.description}</span>
-                                    <span
-                                      className="detail-trigger"
-                                      onClick={e => {
-                                        e.stopPropagation()
-                                        setPanel(m.id)
-                                      }}
-                                    >
-                                      View details →
-                                    </span>
-                                  </span>
-                                </>
-                              )}
-                            </>
-                          ) : (
-                            <div className="card-back">
-                              {m.id === 'cvd' && m.cvdMedian ? (
-                                <>
-                                  <div className="card-back-top">
-                                    <strong>{m.value}</strong>
-                                    <span className="exo-tag">ExoCharts Median View</span>
-                                  </div>
-                                  <CvdMedianChart profile={m.cvdMedian} />
-                                  <p className="plain-explain">{m.cvdMedian.summary}</p>
-                                </>
-                              ) : (
-                                <>
-                                  <div className="card-back-top">
-                                    <strong>{m.value}</strong>
-                                    <span className="exo-tag">Plain English</span>
-                                  </div>
-                                  <p className="plain-explain">{m.plainSummary ?? m.detail}</p>
-                                  {m.id === 'oi' && live.oiRegime.activeRow && (
-                                    <div className={`regime-mini-pill ${live.oiRegime.activeRow.sentiment.toLowerCase()}`}>
-                                      {live.oiRegime.activeRow.marketTitle} — {live.oiRegime.activeRow.sentiment}
-                                    </div>
-                                  )}
-                                </>
-                              )}
-                              {!focus && (
-                                <span className="card-foot">
-                                  <span>Tap to flip back ↺</span>
-                                  <span
-                                    className="detail-trigger"
-                                    onClick={e => {
-                                      e.stopPropagation()
-                                      setPanel(m.id)
-                                    }}
-                                  >
-                                    View details →
-                                  </span>
-                                </span>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      )
-                    })}
+                        )}
+                      </button>
+                    ))}
                   </div>
                 </div>
               </div>
@@ -460,9 +361,6 @@ function App() {
                             )}
                           </div>
                         </div>
-                        <p className="oi-mini-note">{confirmationInfo.progress}</p>
-                        <p className="oi-mini-note">{confirmationInfo.detail}</p>
-                        <p className="oi-mini-note">{confirmationInfo.reason}</p>
                         <p className="oi-mini-note">
                           {observed === null ? 'No closed window yet' : live.confirmation.status === 'insufficient' ? 'Last observed window (feed interrupted, not live)' : 'Latest closed window'}
                         </p>
@@ -589,7 +487,6 @@ function App() {
         )}
         <footer>
           <span>TAKE THE TRADE · OKX LIVE STREAM</span>
-          <span>Built for a clearer perspective.</span>
         </footer>
       </main>
       <dialog
@@ -691,30 +588,23 @@ function App() {
             ))}
           {panel === 'guide' && (
             <>
-              <p>One glance answers: who's pushing, is price listening, are positions building or unwinding, and what just changed?</p>
               <div className="detail-box">
-                <strong>📈 The Market Story (top panel)</strong>
-                <p>💹 <strong>PRICE</strong> — where price is moving, with the dotted 6-hour average (VWAP) as a reference.</p>
-                <p>⚖️ <strong>PRESSURE</strong> — green bars up = buyers hitting market orders; pink bars down = sellers. Taller bars = stronger push. Dashed slots = missing data, never faked.</p>
-                <p>📊 <strong>POSITIONS</strong> — ▲ new leveraged money entering · ▼ money leaving · — steady · · no snapshot yet.</p>
-                <p>⚡ <strong>EVENTS</strong> — reported liquidations and signals pinned to the exact moment they happened.</p>
+                <strong>Read the Market Story</strong>
+                <p><strong>Price.</strong> The line shows price over time. The dotted line, when available, shows the 6-hour volume-weighted average price (VWAP).</p>
+                <p><strong>Pressure.</strong> Up bars show more volume from trades initiated by buyers. Down bars show more from trades initiated by sellers. Taller bars show a larger difference. Dashed slots show missing data.</p>
+                <p><strong>Positions.</strong> Open interest measures outstanding contracts. ▲ increased, ▼ decreased, — little change, · no snapshot.</p>
+                <p><strong>Events.</strong> Markers show the time bucket for reported liquidations and app alerts.</p>
               </div>
               <div className="detail-box">
-                <strong>🟡 Warnings, Structure &amp; Smart RSI</strong>
-                <p>◇ <strong>Divergence</strong> — price goes one way while real order flow goes the other. "Hollow rise" = price up but sellers secretly winning. "Hollow drop" = price down but buyers stepping in. These moves can be fragile.</p>
-                <p>◈ <strong>Possible absorption &amp; Order Blocks (OB)</strong> — one side pushes hard but price won't move; shaded Demand/Supply OB zones mark where passive liquidity stepped in.</p>
-                <p>⚡ <strong>Structure (BOS / CHoCH) &amp; Sweeps</strong> — <em>BOS</em> confirms trend continuation past a swing high/low; <em>CHoCH</em> flags an early character shift against the prior trend; <em>⚡ Sweep</em> spots stop-hunts that wick past a level and snap back inside.</p>
-                <p>🧭 <strong>Smart RSI</strong> — blends price RSI (70%) with volume-weighted money flow (30%) and checks live taker delta. Above 70 is <em>Overbought</em> (especially risky if buyer flow stalls); below 30 is <em>Oversold</em> (potential bounce if buyers step in).</p>
+                <strong>Chart annotations</strong>
+                <p><strong>Divergence.</strong> Price rose while sell volume exceeded buy volume, or price fell while buy volume exceeded sell volume.</p>
+                <p><strong>Possible absorption.</strong> Buy or sell volume is one-sided while price moves little. Shaded supply and demand zones are inferred from price structure.</p>
+                <p><strong>Structure and sweeps.</strong> BOS marks a break beyond a recent high or low in the direction of the trend. CHoCH marks a break against the prior trend. A sweep marks a move past a recent level followed by a return inside it.</p>
+                <p><strong>Smart RSI.</strong> A momentum reading that combines price RSI and volume-weighted money flow. The display labels readings of 70 or higher overbought and 30 or lower oversold.</p>
               </div>
               <div className="detail-box">
-                <strong>🧩 Chapters, cards &amp; pulse</strong>
-                <p>The progression pills (Balanced → Buying builds → …) show how the market got here. A dashed pill is still developing live.</p>
-                <p>Tap the four cards to flip them for plain-English explanations. Market Pulse only updates when a closed window clears the price and open-interest thresholds — it won't jump at noise.</p>
-              </div>
-              <div className="detail-box">
-                <strong>🚦 The 10-second routine</strong>
-                <p>1️⃣ Headline — who's winning? 2️⃣ Chapters — how did we get here? 3️⃣ Amber warnings — anything suspicious? 4️⃣ Confirmed badge — did the move pass the two-window test?</p>
-                <p>⚠️ Context, not a signal — this app never places trades and covers only OKX reported data.</p>
+                <strong>Live and closed windows</strong>
+                <p>A dashed phase label marks a window still in progress. Market Pulse evaluates completed windows. Select a time bucket to see its readings.</p>
               </div>
             </>
           )}
@@ -774,8 +664,10 @@ function App() {
         </div>
       </dialog>
       <MyTradePanel
-        open={tradeOpen}
-        onClose={() => setTradeOpen(false)}
+        open={tradePanel !== null}
+        mode={tradePanel ?? 'plan'}
+        onOpenJournal={() => setTradePanel('journal')}
+        onClose={() => setTradePanel(null)}
         draft={trade.draft}
         setDraft={trade.setDraft}
         result={trade.result}
@@ -790,4 +682,3 @@ function App() {
 }
 
 export default App
-
